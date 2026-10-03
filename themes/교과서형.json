@@ -1,0 +1,17 @@
+{
+  "name": "교과서형",
+  "header": "center",
+  "section": "bar",
+  "qnum": "plain",
+  "tag": "outline",
+  "heading_font": "serif",
+  "body_font": "serif",
+  "line": "thin",
+  "corner": "square",
+  "shade": "none",
+  "density": "normal",
+  "frame": "none",
+  "qstyle": "divided",
+  "deco": "none",
+  "size": "normal"
+}

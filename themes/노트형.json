@@ -1,0 +1,17 @@
+{
+  "name": "노트형",
+  "header": "rule",
+  "section": "number",
+  "qnum": "plain",
+  "tag": "outline",
+  "heading_font": "sans",
+  "body_font": "sans",
+  "line": "thin",
+  "corner": "square",
+  "shade": "none",
+  "density": "normal",
+  "frame": "notebook",
+  "qstyle": "plain",
+  "deco": "none",
+  "size": "normal"
+}

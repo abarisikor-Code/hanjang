@@ -1,0 +1,17 @@
+{
+  "name": "저학년 놀이형",
+  "header": "nameplate",
+  "section": "pill",
+  "qnum": "filled",
+  "tag": "filled",
+  "heading_font": "sans",
+  "body_font": "sans",
+  "line": "bold",
+  "corner": "big",
+  "shade": "none",
+  "density": "airy",
+  "frame": "rounded",
+  "qstyle": "boxed",
+  "deco": "icons",
+  "size": "large"
+}

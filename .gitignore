@@ -1,0 +1,21 @@
+# 비밀·개인 자료 (절대 올리지 않음)
+.env
+forms/*.json
+# 직접 저장한 모양은 올리지 않고 기본 제공 모양만 올린다
+themes/*.json
+!themes/교과서형.json
+!themes/활동지형.json
+!themes/시험지형.json
+!themes/저학년 놀이형.json
+!themes/노트형.json
+
+# 실행·빌드 부산물
+.venv/
+__pycache__/
+*.pyc
+examples/*.html
+dist/
+.claude/
+
+# 시험 중 생긴 윈도우 캐시 폴더 (지워도 됨)
+/%SystemDrive%/

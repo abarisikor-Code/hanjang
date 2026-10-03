@@ -1,0 +1,6 @@
+[browser]
+gatherUsageStats = false
+
+[client]
+# 선생님 화면에 개발자용 메뉴(Deploy 등)를 보이지 않게
+toolbarMode = "minimal"

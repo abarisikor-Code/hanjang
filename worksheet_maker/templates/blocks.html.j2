@@ -1,0 +1,170 @@
+{% macro lines(n) %}{% for _ in range(n) %}<div class="line"></div>{% endfor %}{% endmacro %}
+{% macro q_head(num, body, blanks=False, pts=0) %}
+  <div class="q-head"><span class="q-num">{{ num }}</span><div class="q-text">{{ body|paras(blanks) }}</div>{% if pts %}<span class="q-pts">[{{ pts }}점]</span>{% endif %}</div>
+{% endmacro %}
+
+{% for b, num in blocks %}
+{% set ex = extras[loop.index0] %}
+{% if b.type == "section" %}
+<h2 class="sec">{{ (b.title or b.body)|inline }}</h2>
+
+{% elif b.type in ("text", "concept", "reading") and not (b.body or b.items) %}
+{# 내용 없이 제목만 있는 상자는 빈 상자 대신 작은 제목으로 보여준다 #}
+{% if b.title %}<h3 class="blk-title sub">{{ b.title|inline }}</h3>{% endif %}
+
+{% elif b.type == "text" %}
+<section class="blk text breakable">
+  {% if b.title %}<h3 class="blk-title">{{ b.title }}</h3>{% endif %}
+  {{ b.body|paras }}
+</section>
+
+{% elif b.type == "concept" %}
+<section class="blk concept">
+  <span class="tag">{{ b.title or "핵심 개념" }}</span>
+  {% if b.body %}{{ b.body|paras }}{% endif %}
+  {% if b.items %}
+  <dl>
+    {% for it in b.items %}{% set term, desc = concept_item(it) %}
+    <div class="c-row">{% if term %}<dt>{{ term|inline }}</dt>{% endif %}<dd>{{ desc|inline }}</dd></div>
+    {% endfor %}
+  </dl>
+  {% endif %}
+</section>
+
+{% elif b.type == "reading" %}
+<section class="blk reading breakable">
+  <span class="tag">{{ b.title or "읽기 자료" }}</span>
+  <div class="reading-body">{{ b.body|paras }}</div>
+  {% if b.source %}<p class="source">— {{ b.source }}</p>{% endif %}
+</section>
+
+{% elif b.type == "quote" %}
+<figure class="blk quote">
+  <blockquote>{{ b.body|paras }}</blockquote>
+  {% if b.source %}<figcaption>— {{ b.source }}</figcaption>{% endif %}
+</figure>
+
+{% elif b.type == "table" %}
+<section class="blk tbl breakable">
+  {% if b.title %}<h3 class="blk-title">{{ b.title }}</h3>{% endif %}
+  {% if b.rows %}
+  <table>
+    <thead><tr>{% for c in b.rows[0] %}<th>{{ c|inline }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for r in b.rows[1:] %}<tr>{% for c in r %}<td>{{ c|inline }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+{% elif b.type == "activity" %}
+<section class="blk activity">
+  <h3 class="act-head"><span class="act-num">활동 {{ num }}</span>{{ b.title|option_text|inline }}</h3>
+  {% if b.body %}{{ b.body|paras }}{% endif %}
+  {% if b.items %}<ol class="steps">{% for s in b.items %}<li>{{ s|inline }}</li>{% endfor %}</ol>{% endif %}
+</section>
+
+{% elif b.type == "short_answer" %}
+<section class="blk q short">
+  {{ q_head(num, b.body, pts=ex.pts) }}
+  <div class="answer-short"><span class="ans-label">답</span><div class="ans-lines">{{ lines(b.answer_lines()) }}</div></div>
+</section>
+
+{% elif b.type == "essay" %}
+<section class="blk q essay">
+  {{ q_head(num, b.body, pts=ex.pts) }}
+  <div class="answer-box">{{ lines(b.answer_lines()) }}</div>
+</section>
+
+{% elif b.type == "multiple_choice" %}
+<section class="blk q mc">
+  {{ q_head(num, b.body, pts=ex.pts) }}
+  <ol class="options" style="--cols: {{ [option_cols(b.items), 2]|min if ws.kind == "test" else option_cols(b.items) }}">
+    {% for o in b.items %}<li><span class="opt-num">{{ CIRCLED[loop.index0] if loop.index0 < 10 else loop.index }}</span>{{ o|option_text|inline }}</li>{% endfor %}
+  </ol>
+</section>
+
+{% elif b.type == "fill_blank" %}
+<section class="blk q fill">
+  {{ q_head(num, b.body, True, pts=ex.pts) }}
+</section>
+
+{% elif b.type == "ox" %}
+<section class="blk q ox">
+  {{ q_head(num, b.title or "다음 설명이 맞으면 O, 틀리면 X에 표시하시오.", pts=ex.pts) }}
+  <table class="ox-table">
+    {% for it in b.items %}
+    <tr><td class="ox-no">({{ loop.index }})</td><td>{{ it|inline }}</td><td class="ox-mark">O &nbsp;·&nbsp; X</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+{% elif b.type == "drawing" %}
+<section class="blk q drawing">
+  {{ q_head(num, b.body, pts=ex.pts) }}
+  <div class="draw-box" style="height: calc(var(--line-h) * {{ b.answer_lines() }})"></div>
+</section>
+
+{% elif b.type == "diagram" %}
+<figure class="blk figure diagram" style="--w: {{ IMAGE_SIZES[b.size][1] }}%">
+  <div class="dg-wrap">{{ b.diagram|svg if b.diagram else "" }}{% if not b.diagram %}<div class="img-placeholder">도식 설정이 비어 있어요 — 편집 화면에서 종류와 숫자를 정하세요</div>{% endif %}</div>
+  {% if b.body or b.source %}
+  <figcaption><span class="fig-num">[그림 {{ num }}]</span> {{ b.body|inline }}{% if b.source %} <span class="fig-src">(출처: {{ b.source }})</span>{% endif %}</figcaption>
+  {% endif %}
+</figure>
+
+{% elif b.type == "image" %}
+<figure class="blk figure" style="--w: {{ IMAGE_SIZES[b.size][1] }}%">
+  {% if b.image %}
+  <img src="{{ b.image }}" alt="{{ b.body }}">
+  {% else %}
+  <div class="img-placeholder">그림 자리 — 편집 화면에서 그림 파일을 넣으세요</div>
+  {% endif %}
+  {% if b.body or b.source %}
+  <figcaption><span class="fig-num">[그림 {{ num }}]</span> {{ b.body|inline }}{% if b.source %} <span class="fig-src">(출처: {{ b.source }})</span>{% endif %}</figcaption>
+  {% endif %}
+</figure>
+
+{% elif b.type == "drill" %}
+<section class="blk q drill">
+  {{ q_head(num, b.title or b.body or "다음 문제를 풀어 보세요.", pts=ex.pts) }}
+  <ol class="drill-grid" style="--cols: {{ ex.cols }}">
+    {% for it in b.items %}<li><span class="d-no">({{ loop.index }})</span><span class="d-q">{{ it|blanks }}</span></li>{% endfor %}
+  </ol>
+  <p class="drill-score">맞힌 개수 <span class="fill"></span> / {{ b.items|length }}</p>
+</section>
+
+{% elif b.type == "cornell" %}
+<section class="blk q cornell">
+  {{ q_head(num, b.title or "핵심 내용을 정리해 보세요.", pts=ex.pts) }}
+  <table class="cornell-table">
+    <thead><tr><th>핵심어</th><th>정리</th></tr></thead>
+    <tbody>
+    {% for it in b.items %}{% set term, desc = concept_item(it) %}
+    <tr><th>{{ term|inline }}</th><td>{{ desc|blanks }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% elif b.type == "bingo" %}
+<section class="blk bingo">
+  <h3 class="bingo-title">{{ (b.title or "정답 빙고")|inline }}</h3>
+  <table class="bingo-grid size-{{ ex.grid|length }}">
+    {% for row in ex.grid %}<tr>{% for c in row %}<td>{{ c|inline }}</td>{% endfor %}</tr>{% endfor %}
+  </table>
+  <p class="bingo-help">정답을 찾아 색칠해요. 가로·세로·대각선으로 한 줄을 완성하면 빙고!</p>
+</section>
+
+{% elif b.type == "reflection" %}
+<section class="blk reflection">
+  <span class="tag">{{ b.title or "스스로 점검하기" }}</span>
+  <table class="check-table">
+    <thead><tr><th>점검 내용</th><th>잘함</th><th>보통</th><th>노력 필요</th></tr></thead>
+    <tbody>
+    {% for it in b.items %}<tr><td>{{ it|inline }}</td><td class="c"></td><td class="c"></td><td class="c"></td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endfor %}

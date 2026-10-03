@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ ws.title }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Noto+Serif+KR:wght@400;600&family=Noto+Emoji&display=swap" rel="stylesheet">
+<style>
+:root { --base: {{ lv.base }}pt; --lh: {{ lv.lh }}; --line-h: {{ lv.line_h }}mm; --line-h0: {{ lv.line_h }}mm; {{ theme_vars }} }
+@page { @top-right { content: {{ running|css_string }}; } @bottom-left { content: {{ footer|css_string }}; } }
+@page :first { @top-right { content: none; } }
+{% include "worksheet.css" %}
+</style>
+</head>
+{% if thumbnail %}<style>
+html, body { background: #fff; overflow: hidden; }
+.sheet { width: 150mm; min-height: 0; margin: 0 auto; padding: 8mm 9mm; box-shadow: none; }
+.page-frame { inset: 2.5mm; }
+.fr-box .sheet, .fr-rounded .sheet { padding: 9mm 11mm; }
+.fr-notebook .page-frame { inset: 2.5mm auto 2.5mm 6mm; }
+.fr-notebook .sheet { padding-left: 14mm; }
+</style>{% endif %}
+<body class="{{ theme_classes }}">
+{% if show_print_button %}<button class="print-btn" type="button" onclick="window.print()">인쇄하기</button>{% endif %}
+{% if form_pages %}
+{# 내 학습지 양식: 내용을 숨은 곳에 먼저 그린 뒤, 아래 스크립트가 양식 쪽의 칸에 차례로 옮겨 담는다 #}
+<div id="form-src" hidden>
+{% if not form_has_title %}<h1 class="form-flow-title">{{ ws.title }}</h1>{% endif %}
+{% if ws.goals %}
+<section class="goals">
+  <span class="tag">학습 목표</span>
+  <ul>{% for g in ws.goals %}<li>{{ g|inline }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% include "blocks.html.j2" %}
+</div>
+<div id="form-out"></div>
+{% for fp in form_pages %}
+<template class="form-tpl"><section class="form-page">
+  <div class="form-canvas" style="{{ fp.canvas }}">
+    <img class="form-bg" alt="">
+    {% for r in fp.regions %}
+    {% if r.erase %}<div class="form-erase" style="{{ r.style }}"></div>{% endif %}
+    <div class="{{ 'form-title' if r.kind == 'title' else 'form-box' }}" style="{{ r.style }}"></div>
+    {% endfor %}
+  </div>
+</section></template>
+{% endfor %}
+{% else %}
+<main class="sheet">
+<div class="page-frame" aria-hidden="true"></div>
+
+<header class="ws-header">
+  <div class="ws-meta">
+    <span>{{ ws.subject }}{% if ws.subject and ws.unit %} · {% endif %}{{ ws.unit }}</span>
+    {% if ws.lesson %}<span class="ws-lesson">{{ ws.lesson }}</span>{% endif %}
+  </div>
+  <h1 class="ws-title">{{ ws.title }}</h1>
+  <div class="ws-student">
+    <span><i class="fill"></i>학년</span>
+    <span><i class="fill"></i>반</span>
+    <span><i class="fill"></i>번</span>
+    <span>이름 <i class="fill name"></i></span>
+  </div>
+  {% if ws.kind == "test" %}<div class="ws-score"><span>점수</span><i></i><span>/ 100</span></div>{% endif %}
+</header>
+
+{% if ws.goals and ws.kind != "test" %}
+<section class="goals">
+  <span class="tag">학습 목표</span>
+  <ul>{% for g in ws.goals %}<li>{{ g|inline }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<div class="ws-body">
+{% include "blocks.html.j2" %}
+</div>
+
+</main>
+{% endif %}
+
+{% if show_answers %}
+<main class="sheet answer-sheet">
+  <header class="ak-header">
+    <span class="tag">정답과 해설</span>
+    <h2 class="ak-title">{{ ws.title }}</h2>
+  </header>
+  <ol class="ak-list">
+  {% for b, num in blocks if num and b.type in ("short_answer", "essay", "multiple_choice", "fill_blank", "ox", "drawing", "drill", "cornell") %}
+    <li>
+      <span class="ak-num">{{ num }}</span>
+      <div class="ak-body">
+        {% if b.answer_text() %}<p class="ak-answer"><b>정답</b> {{ b.answer_text()|inline }}</p>
+        {% elif b.type in ("essay", "drawing") %}<p class="ak-answer"><b>정답</b> 정해진 답이 없는 문항입니다. 생각을 자유롭게 쓰면 됩니다.</p>
+        {% else %}<p class="ak-answer"><b>정답</b> (정답을 적어 주세요)</p>{% endif %}
+        {% if b.solution %}<p class="ak-solution">{{ b.solution|inline }}</p>{% endif %}
+      </div>
+    </li>
+  {% endfor %}
+  </ol>
+</main>
+{% endif %}
+{% if form_pages %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-data(양식 그림)를 읽어야 해서 다 읽은 뒤에
+  // 내 학습지 양식: 내용을 양식의 문제 칸에 차례로 담는다. 칸이 차면 다음 칸, 다음 쪽으로 넘기고,
+  // 양식 쪽 수 안에 다 들어가지 않으면 글자를 조금씩 줄여 보고, 그래도 넘치면 마지막 쪽 양식을 이어 붙인다.
+  var data = JSON.parse(document.getElementById("hanjang-data").textContent);
+  var images = data.form.pages.map(function (p) { return p.image; });
+  var title = data.worksheet.title || "";
+  var tpls = Array.prototype.slice.call(document.querySelectorAll("template.form-tpl"));
+  var src = document.getElementById("form-src"), out = document.getElementById("form-out");
+  var root = document.documentElement;
+
+  function fitTitle(el) {
+    var size = Math.max(10, el.clientHeight * 0.6);
+    el.style.fontSize = size + "px";
+    while (size > 9 && el.scrollWidth > el.clientWidth) { size -= 1; el.style.fontSize = size + "px"; }
+  }
+
+  function build(scale) {
+    out.innerHTML = "";
+    root.style.setProperty("--form-scale", scale);
+    var queue = Array.prototype.map.call(src.children, function (n) { return n.cloneNode(true); });
+    var count = 0;
+    while (count === 0 || (queue.length && count < 40)) {
+      var k = Math.min(count, tpls.length - 1);
+      var page = tpls[k].content.firstElementChild.cloneNode(true);
+      page.querySelector("img.form-bg").src = images[k];
+      out.appendChild(page);
+      count++;
+      Array.prototype.forEach.call(page.querySelectorAll(".form-title"), function (el) {
+        el.textContent = title;  // 쪽마다 같은 제목
+        fitTitle(el);
+      });
+      var before = queue.length;
+      Array.prototype.forEach.call(page.querySelectorAll(".form-box"), function (box) {
+        while (queue.length) {
+          box.appendChild(queue[0]);
+          if (box.scrollHeight > box.clientHeight + 1) {
+            if (box.children.length > 1) { box.removeChild(queue[0]); break; }
+            queue.shift(); break;  // 칸 하나보다 큰 내용: 혼자 그 칸에 둔다
+          }
+          queue.shift();
+        }
+        // 칸 맨 끝에 소제목만 남으면 뒤 내용과 함께 다음 칸으로 넘긴다
+        var last = box.lastElementChild;
+        if (queue.length && last && box.children.length > 1 && last.matches("h2.sec, h3.blk-title.sub")) {
+          queue.unshift(box.removeChild(last));
+        }
+      });
+      if (queue.length === before && count >= tpls.length) break;  // 문제 칸이 없는 쪽이 반복되면 멈춘다
+    }
+    if (queue.length) {  // 담을 칸이 없으면 남은 내용은 보통 종이에
+      var rest = document.createElement("main");
+      rest.className = "sheet";
+      queue.forEach(function (n) { rest.appendChild(n); });
+      out.appendChild(rest);
+    }
+    return count;
+  }
+
+  function layout() {
+    root.style.setProperty("--fit", "1");  // 인쇄와 같은 크기로 재고 나서 화면에 맞게 줄인다
+    var scales = [1, 0.93, 0.86], done = false;
+    for (var i = 0; i < scales.length && !done; i++) done = build(scales[i]) <= tpls.length;
+    if (!done) build(1);  // 줄여도 넘치면 원래 크기로 쪽을 늘린다
+    fit();
+  }
+
+  function fit() {
+    root.style.setProperty("--fit", Math.min(1, (window.innerWidth - 24) / 794).toFixed(3));
+  }
+
+  layout();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout);  // 글꼴이 늦게 오면 다시 잰다
+  window.addEventListener("resize", fit);
+});
+</script>
+{% else %}
+<script>
+(function () {
+  // A4 폭(210mm = 약 794px)이 화면보다 넓으면 그만큼 축소한다.
+  function fit() {
+    {% if thumbnail %}
+    // 모양 고르기용: 예시 학습지 전체가 칸 안에 보이도록 가로·세로 모두 맞춘다.
+    var sheet = document.querySelector(".sheet");
+    document.documentElement.style.setProperty("--fit", "1");
+    var z = Math.min(window.innerWidth / sheet.offsetWidth, window.innerHeight / sheet.offsetHeight, 1);
+    {% else %}
+    var z = Math.min(1, (window.innerWidth - 24) / 794);
+    {% endif %}
+    document.documentElement.style.setProperty("--fit", z.toFixed(3));
+  }
+  fit();
+  window.addEventListener("resize", fit);
+})();
+</script>
+{% endif %}
+<!-- 한장 편집 정보: 이 파일을 한장 앱의 '불러오기'에 올리면 다시 편집할 수 있습니다. -->
+<script type="application/json" id="hanjang-data">
+{{ saved_data }}
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "활동지형",
+  "header": "band",
+  "section": "band",
+  "qnum": "circle",
+  "tag": "filled",
+  "heading_font": "sans",
+  "body_font": "sans",
+  "line": "bold",
+  "corner": "round",
+  "shade": "light",
+  "density": "airy",
+  "frame": "none",
+  "qstyle": "card",
+  "deco": "none",
+  "size": "normal"
+}

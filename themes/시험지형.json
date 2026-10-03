@@ -1,0 +1,17 @@
+{
+  "name": "시험지형",
+  "header": "exam",
+  "section": "box",
+  "qnum": "box",
+  "tag": "outline",
+  "heading_font": "sans",
+  "body_font": "sans",
+  "line": "normal",
+  "corner": "square",
+  "shade": "none",
+  "density": "compact",
+  "frame": "box",
+  "qstyle": "divided",
+  "deco": "none",
+  "size": "normal"
+}
