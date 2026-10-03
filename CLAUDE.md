@@ -70,6 +70,8 @@
   학년·과목·코드·과제 형태(`separate`=과목별로 나눠서 포함)·남은 바람만 고른다. 앱이 코드를 그 학년군·과목으로 걸러
   `ss.sel`에 넣고 '배울 내용' 화면(s2/f2)으로 보내 확인하게 한다. 남은 바람·과제 형태는 `ss.nl`로 3단계 칸에 미리 채운다.
 - 만들기 방식(`ss.mode`): `single` 단일과목형(기본) / `fusion` 과목융합형(`llm.generate_integrated`) / `tools` 자료·직접 만들기.
+- 문제 수: `app.question_count`(막대 + 숫자 칸, 1~30, `ss.n_questions`). 만들기 설정 폼 밖에 둔다(폼 안 입력칸은 서로 맞출 수
+  없다). 프롬프트는 '꼭 N개' — '안팎'이라고 하면 25개를 부탁해도 16개쯤 만든다(2026-10 실측).
 - AI 호출 공통: 기본 모델 `gemini-3.5-flash-lite` + `THINKING="high"`, 요청당 `REQUEST_TIMEOUT` 100초, 붐비면 같은 모델 재시도 없이
   다음 모델로. 끊긴 JSON(`_BrokenOutput`)도 다음 모델로. 화면 진행 표시는 `llm.progress`(ContextVar) → `app.ai_status`.
   응답 스키마에서 내용·정답 칸(title, body, items, answer, solution)은 필수여야 한다 — 선택이면 lite 모델이 통째로 비운다.
@@ -103,6 +105,13 @@
   `fill`이 학습지 제목·목표·단원을 넣는다(사용자가 고친 글 `edits`가 먼저). render는 `parts()`로 첫 쪽 틀(머리 + 문제 칸)과
   다음 쪽 틀을 만들고, 그림 양식과 같은 스크립트가 문제를 칸에 흘려 담는다(한글 양식은 글자를 줄이지 않고 쪽을 늘린다).
   모양 차이는 worksheet.css의 `.df-*`·`dn-*`·`dsec-*`와 `--df-*` 변수로만. 앱 편집 화면은 `app._doc_editor`.
+  **PDF·사진 양식**(`DocForm.img: ImgSource`): `llm.analyze_form_page`가 첫 쪽에서 위치(head_end·body·foot_end, 0~1000)·
+  머리·꼬리의 글 줄(box·text·role)·짜임 선택지(layout·number·section·question_bold·serif)·이름표 칸 위치만 고른다.
+  `from_image`가 `_snap_text`로 글 상자를 실제 글자에 맞추고(AI 좌표는 한 줄쯤 어긋남 — 줄·낱말 묶음 가운데 읽은 글의 너비와
+  맞는 것), 바탕색·글자색·빈 곳(room)을 재고, `derive_img_style`이 가로선에서 선 색·굵기·답 줄 간격, 이름표 칸에서 칸 색을 잰다.
+  그리기는 가로띠(`.img-band`, 배경 그림은 `parts()['css']`로 한 번만): 고친 글·자동 칸만 바탕색으로 덮고 새로 쓴다(`.img-text`,
+  글자 크기는 스크립트 `fitText`가 줄인다). 첫 쪽만 쓰고 다음 쪽은 같은 폭으로 문제만. 앱은 `_img_split`(막대)·📐(글 상자 위치).
+  예전 그림 위 칸 방식(`Form.pages`, `find_form_regions`)은 올릴 때 고를 수 있게 남겨 두었다.
   .hwp는 `forms.hwp_preview`(olefile)로 첫 쪽 미리보기 그림만 꺼내 그림 양식으로 쓴다.
 - `worksheet_maker/saved.py` — 저장한 HTML 안의 `<script type="application/json" id="hanjang-data">`에 구조·테마·학교급·꼬리말을 담고(`pack`), 다시 꺼낸다(`unpack`).
   저장 형식을 바꿀 때는 `FORMAT_VERSION`을 올리고 예전 파일도 열리게 유지한다. (2: `form` 추가, 3: `form.doc` 한글 양식)

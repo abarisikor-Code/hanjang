@@ -39,13 +39,13 @@ html, body { background: #fff; overflow: hidden; }
 </div>
 <div id="form-out"></div>
 {% if doc %}
-{# 한글 양식: 첫 쪽은 머리 + 문제 자리, 다음 쪽부터는 문제 자리만 (머리 반복을 고르면 머리도) #}
-<style>@page form { size: {{ doc.size }}; }</style>
+{# 한글·그림 양식: 첫 쪽은 머리 + 문제 자리, 다음 쪽부터는 문제 자리만 (머리 반복을 고르면 머리도) #}
+<style>@page form { size: {{ doc.size }}; } {{ doc.css }}</style>
 <template class="form-tpl"><section class="form-page doc-page" style="{{ doc.page }}">
   <div class="doc-head">{{ doc.head }}</div>
   <div class="form-box {{ doc.box_class }}" style="{{ doc.box_style }}"></div>
 </section></template>
-<template class="form-tpl"><section class="form-page doc-page doc-next" style="{{ doc.page }}">
+<template class="form-tpl"><section class="form-page doc-page doc-next" style="{{ doc.page_next }}">
   {% if doc.repeat_head %}<div class="doc-head">{{ doc.head }}</div>{% endif %}
   <div class="form-box {{ doc.box_class_next }}" style="{{ doc.box_style }}"></div>
 </section></template>
@@ -182,7 +182,15 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
     var scales = {{ "[1]" if doc else "[1, 0.93, 0.86]" }}, done = false;
     for (var i = 0; i < scales.length && !done; i++) done = build(scales[i]) <= tpls.length;
     if (!done) build(1);  // 줄여도 넘치면 원래 크기로 쪽을 늘린다
+    Array.prototype.forEach.call(out.querySelectorAll(".img-text"), fitText);
     fit();
+  }
+
+  function fitText(el) {  // 그림 양식에서 고친 글: 덮은 칸 안에 들어가게 글자를 줄인다
+    var size = parseFloat(el.style.fontSize) || 12;
+    while (size > 5 && (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1)) {
+      size -= 0.5; el.style.fontSize = size + "pt";
+    }
   }
 
   function fit() {

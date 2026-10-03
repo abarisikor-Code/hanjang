@@ -580,14 +580,36 @@ def header_panel() -> None:
     ai_fill_panel(ws)
 
 
+N_MIN, N_MAX = 1, 30  # 문제 수
+
+
+def _set_count(prefix: str, key: str) -> None:
+    n = int(max(N_MIN, min(N_MAX, ss[key] or 8)))
+    ss.n_questions = n
+    ss[f"{prefix}_n_sl"] = ss[f"{prefix}_n_num"] = n  # 막대와 숫자 칸을 서로 맞춘다
+
+
+def question_count(prefix: str) -> None:
+    """몇 문제: 막대로 끌거나 숫자를 적는다. 둘은 같은 값(ss.n_questions)을 쓴다.
+    만들기 설정 폼 밖에 둔다 — 폼 안의 입력칸은 서로 맞춰 줄 수 없다."""
+    ss.setdefault("n_questions", 8)
+    for k in (f"{prefix}_n_sl", f"{prefix}_n_num"):
+        ss.setdefault(k, ss.n_questions)
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+    c1.slider("몇 문제?", N_MIN, N_MAX, key=f"{prefix}_n_sl", on_change=_set_count, args=(prefix, f"{prefix}_n_sl"),
+              help="막대를 끌거나 오른쪽 칸에 숫자를 적으세요. 그만큼 안팎으로 만들어요.")
+    c2.number_input("직접 적기", N_MIN, N_MAX, step=1, key=f"{prefix}_n_num",
+                    on_change=_set_count, args=(prefix, f"{prefix}_n_num"))
+
+
 def ai_fill_panel(ws: dict) -> None:
     """머리말을 보고 AI가 구성요소를 채운다."""
     with st.expander("✨ AI로 내용 채우기 — 위 제목·목표만 적고 누르면 문제를 만들어 줘요", expanded=not ws["blocks"]):
+        question_count("t")
         with st.form("t_form", border=False):
-            c1, c2 = st.columns(2)
-            difficulty = c1.segmented_control("난이도", list(llm.DIFFICULTY), default="standard", key="t_diff",
+            difficulty = st.segmented_control("난이도", list(llm.DIFFICULTY), default="standard", key="t_diff",
                                               format_func=lambda k: llm.DIFFICULTY[k][0]) or "standard"
-            n_questions = c2.segmented_control("문항 수", [5, 8, 10, 15], default=8, key="t_n") or 8
+            n_questions = ss.n_questions
             extra = st.text_input("더 바라는 점 (선택)", key="t_extra", placeholder="예: 모둠 활동 하나를 넣어 주세요")
             replace = bool(ws["blocks"]) and st.checkbox(
                 f"지금 있는 내용 {len(ws['blocks'])}칸을 지우고 새로 만들기", key="t_replace", help="끄면 뒤에 이어서 붙입니다.")
@@ -739,7 +761,7 @@ def _region_editor(form: forms.Form) -> None:
 
 
 def _doc_change(field: str, key: str, original: str = "") -> None:
-    """한글 양식 고치기: 나누는 곳 / 자동 칸 / 머리·꼬리 글 / 문제 자리 모양."""
+    """양식(한글·그림) 고치기: 나누는 곳 / 자동 칸 / 머리·꼬리 글과 그 위치 / 문제 자리 모양."""
     form = current_form()
     if not form or not form.doc:
         return
@@ -749,6 +771,19 @@ def _doc_change(field: str, key: str, original: str = "") -> None:
         d.foot = max(d.foot, d.head)
     elif field == "foot":
         d.foot = max(int(value), d.head)
+    elif field.startswith("img.") and d.img:  # 그림 양식의 띠 (화면은 %, 저장은 0~1000)
+        name = field[4:]
+        if name == "x":
+            d.img.left, d.img.right = (round(float(v) * 10) for v in value)
+        else:
+            setattr(d.img, name, round(float(value) * 10))
+        d.img.ordered()
+    elif field.startswith("box:") and d.img:  # 그림 양식 글 상자 위치
+        _, i, idx = field.split(":")
+        t = d.img.texts[int(i)]
+        box = list(t.box)
+        box[int(idx)] = round(float(value) * 10)
+        t.box, t.room = docform._clean_box(box), []
     elif field in ("auto_title", "auto_goals", "repeat_head"):
         setattr(d, field, bool(value))
     elif field == "no_bg":
@@ -772,7 +807,9 @@ def _doc_reset(what: str) -> None:
     d = form.doc
     if what == "edits":
         d.edits = {}
-    else:  # 지금 나눈 곳으로 모양을 다시 읽는다
+    elif d.img:  # 지금 나눈 곳으로 모양을 다시 잰다
+        d.style = docform.derive_img_style(d.img)
+    else:
         doc = d.parsed()
         d.style = docform.derive_style(doc, hwpx.units(doc), d.head, d.foot)
     set_form(form)
@@ -780,11 +817,18 @@ def _doc_reset(what: str) -> None:
 
 def _doc_editor(form: forms.Form) -> None:
     d = form.doc
-    rev = ss.get("form_rev", 0)
-    k = f"df{rev}"
+    k = f"df{ss.get('form_rev', 0)}"
+    if d.img:
+        _img_split(d, k)
+    else:
+        _hwpx_split(d, k)
+    _doc_texts(d, k)
+    _doc_style(d, k)
+
+
+def _hwpx_split(d: docform.DocForm, k: str) -> None:
     labels = docform.unit_labels(d)
     n = len(labels)
-
     st.markdown("**① 나누기** — 위에서부터 차례로 놓인 조각을 머리·문제 자리·꼬리로 나눠요.")
     c1, c2 = st.columns(2)
     c1.selectbox("머리는 여기까지", list(range(n + 1)), index=min(d.head, n), key=f"{k}_head",
@@ -799,6 +843,28 @@ def _doc_editor(form: forms.Form) -> None:
     st.caption("🟦 머리(그대로) · 🟥 문제 자리(원래 문제를 지우고 새 문제를 이 모양으로) · 🟩 꼬리(그대로)")
     st.iframe(docform.split_preview(d), height=460)
 
+
+def _img_split(d: docform.DocForm, k: str) -> None:
+    src = d.img
+    st.markdown("**① 나누기** — 양식 첫 쪽을 위에서부터 머리·문제 자리·꼬리로 나눠요. 막대를 끌어 고치세요.")
+    c1, c2 = st.columns([1, 1.2])
+    c1.image(docform.img_preview(src), width="stretch")
+    c1.caption("🟦 머리(그대로) · 🟥 문제 자리(새 문제로) · 🟩 꼬리(그대로) · 숫자 = 고칠 수 있는 글")
+    with c2:
+        st.slider("머리 끝 (위에서 %)", 0.0, 100.0, src.head_end / 10, step=0.5, key=f"{k}_he",
+                  on_change=_doc_change, args=("img.head_end", f"{k}_he"),
+                  help="제목·이름 칸·학습 목표 칸이 끝나는 곳")
+        st.slider("문제 자리 끝 = 꼬리 시작 (%)", 0.0, 100.0, src.body_end / 10, step=0.5, key=f"{k}_be",
+                  on_change=_doc_change, args=("img.body_end", f"{k}_be"))
+        st.slider("꼬리 끝 (%)", 0.0, 100.0, src.foot_end / 10, step=0.5, key=f"{k}_fe",
+                  on_change=_doc_change, args=("img.foot_end", f"{k}_fe"),
+                  help="꼬리(※ 안내 등)가 없으면 문제 자리 끝과 같게 두세요")
+        st.slider("문제 자리 왼쪽·오른쪽 끝 (%)", 0.0, 100.0, (src.left / 10, src.right / 10), step=0.5, key=f"{k}_x",
+                  on_change=_doc_change, args=("img.x", f"{k}_x"))
+        st.caption("새 문제는 첫 쪽의 빨간 곳에 들어가고, 넘치면 다음 쪽부터 같은 폭으로 이어져요.")
+
+
+def _doc_texts(d: docform.DocForm, k: str) -> None:
     st.markdown("**② 머리·꼬리 글 고치기**")
     a1, a2 = st.columns(2)
     a1.checkbox("제목 칸에 학습지 제목 넣기", value=d.auto_title, key=f"{k}_at",
@@ -809,19 +875,32 @@ def _doc_editor(form: forms.Form) -> None:
     items = docform.editable(d)
     if not items:
         st.caption("머리·꼬리에 고칠 글이 없어요.")
+    if d.img and items:
+        st.caption("그림 양식은 고친 글만 원래 글 자리를 바탕색으로 덮고 새로 써요. 자리가 어긋나면 📐로 옮기세요.")
     for e in items:
         ek = f"{k}_e_{e['key']}"
-        part = "머리" if e["part"] == "head" else "꼬리"
+        part = ("머리" if e["part"] == "head" else "꼬리") + (f" {e['n']}" if "n" in e else "")
+        col = st.columns([5, 1], vertical_alignment="bottom") if d.img else [st.container()]
         if e["slot"]:
-            st.text_input(f"{part} · 자동: {slot_names[e['slot']]}", value=d.edits.get(e["key"], ""), key=ek,
-                          placeholder=f"비워 두면 {slot_names[e['slot']]}이(가) 들어가요 (원래: {e['text'][:30]})",
-                          on_change=_doc_change, args=(f"edit:{e['key']}", ek, ""))
+            col[0].text_input(f"{part} · 자동: {slot_names[e['slot']]}", value=d.edits.get(e["key"], ""), key=ek,
+                              placeholder=f"비워 두면 {slot_names[e['slot']]}이(가) 들어가요 (원래: {e['text'][:30]})",
+                              on_change=_doc_change, args=(f"edit:{e['key']}", ek, ""))
         else:
-            st.text_input(f"{part}", value=d.edits.get(e["key"], e["text"]), key=ek,
-                          on_change=_doc_change, args=(f"edit:{e['key']}", ek, e["text"]))
+            col[0].text_input(part, value=d.edits.get(e["key"], e["text"]), key=ek,
+                              on_change=_doc_change, args=(f"edit:{e['key']}", ek, e["text"]))
+        if d.img:
+            i = int(e["key"][1:])
+            box = d.img.texts[i].box
+            with col[1].popover("📐", help="이 글 자리 옮기기"):
+                for idx, label in ((0, "위 %"), (2, "아래 %"), (1, "왼쪽 %"), (3, "오른쪽 %")):
+                    bk = f"{k}_box_{i}_{idx}"
+                    st.number_input(label, 0.0, 100.0, box[idx] / 10, step=0.2, format="%.1f", key=bk,
+                                    on_change=_doc_change, args=(f"box:{i}:{idx}", bk))
     if d.edits:
         st.button("고친 글 모두 되돌리기", key=f"{k}_reset_edits", on_click=_doc_reset, args=("edits",))
 
+
+def _doc_style(d: docform.DocForm, k: str) -> None:
     st.markdown("**③ 문제 자리 모양** — 양식에서 읽은 값이에요. 바꾸면 오른쪽 미리보기에 바로 보여요.")
     sty = d.style
     layouts = list(docform.LAYOUTS)
@@ -871,7 +950,8 @@ def form_panel() -> None:
     form = current_form()
     if form:
         if form.doc:
-            st.success(f"📄 **{md(form.name)}** 한글 양식에 넣고 있어요 — 머리·꼬리는 그대로, 문제 자리에 새 문제를 담아요")
+            kind = "그림(PDF·사진)" if form.doc.img else "한글"
+            st.success(f"📄 **{md(form.name)}** {kind} 양식에 넣고 있어요 — 머리·꼬리는 그대로, 문제 자리에 새 문제를 담아요")
         else:
             st.success(f"📄 **{md(form.name)}** 양식에 넣고 있어요 ({len(form.pages)}쪽 · 문제 칸 {form.n_regions()}개)")
         c1, c2 = st.columns(2)
@@ -928,14 +1008,17 @@ def _form_save_popover(col, form: forms.Form) -> None:
 
 def _form_new_expander(form: forms.Form | None, saved: list[str]) -> None:
     with st.expander("➕ 새 양식 올리기", expanded=not form and not saved):
-        st.caption("**한글(HWPX) 파일**이 가장 정확해요 — 제목·이름 칸·표 모양을 그대로 읽고, 문제 자리에 새 문제를 "
+        st.caption("올린 양식을 🟦 머리(제목·이름 칸) / 🟥 문제 자리 / 🟩 꼬리(※ 안내)로 나누고, 문제 자리에 새 문제를 "
                    "그 양식 모양(번호·칸 색·답 줄)으로 넣어요. 쪽 수 제한 없이 이어져요. "
-                   "PDF·사진은 쪽 그림 위의 칸에 넣어요 (앞 4쪽까지, 넘치면 마지막 쪽 반복). "
+                   "**한글(HWPX)** 은 표·글꼴까지 그대로 읽어 가장 정확하고, PDF·사진은 AI가 첫 쪽을 살펴 나눠요. "
                    "HWP는 한글에서 '다른 이름으로 저장 → HWPX'로 바꿔 올리면 가장 좋아요.")
         up = st.file_uploader("양식 파일 (한글 HWPX·HWP·PDF·사진)", type=["hwpx", "hwp", "pdf", "png", "jpg", "jpeg", "webp"],
                               key="form_up")
         with st.form("form_new", border=False):
             name = st.text_input("양식 이름", placeholder="예: 우리 반 수학 익힘 양식", key="form_new_name")
+            overlay = st.checkbox("PDF·사진: 나누지 않고 쪽 그림 위의 칸에 그대로 넣기 (예전 방식, 앞 4쪽까지)",
+                                  key="form_overlay",
+                                  help="양식 여러 쪽을 그대로 되풀이해 쓰고 싶을 때. 한글(HWPX)에는 쓰이지 않아요.")
             go_form = st.form_submit_button("✨ 양식 살펴보기 (10초쯤)", type="primary", width="stretch")
         if go_form and not up:
             st.warning("양식 파일을 먼저 올려 주세요.")
@@ -958,20 +1041,33 @@ def _form_new_expander(form: forms.Form | None, saved: list[str]) -> None:
                 if ext == "hwp":  # 옛 한글 파일은 안에 든 첫 쪽 미리보기 그림만 쓸 수 있다
                     data, mime = forms.hwp_preview(data), "image/png"
                 pages = forms.pages_from_upload(data, mime)
-                with ai_status("양식에서 문제를 넣을 칸을 찾는 중"):
-                    found = llm.find_form_regions(api_key=api_key, pages=[forms.page_bytes(p) for p in pages], model=model)
+                if not overlay:
+                    with ai_status("양식을 머리·문제 자리·꼬리로 나누는 중"):
+                        found = llm.analyze_form_page(api_key=api_key, page=forms.page_bytes(pages[0]), model=model)
+                    df = docform.from_image(pages[0].image, pages[0].width, pages[0].height, found)
+                else:
+                    with ai_status("양식에서 문제를 넣을 칸을 찾는 중"):
+                        found = llm.find_form_regions(api_key=api_key, pages=[forms.page_bytes(p) for p in pages], model=model)
             except (forms.FormError, llm.AnalyzeError) as e:
                 st.error(str(e))
             else:
+                hwp_note = (" HWP 파일은 첫 쪽 미리보기 그림만 읽어서 흐릴 수 있어요 — 한글에서 HWPX로 저장해 올리면 "
+                            "원본 그대로 쓸 수 있어요." if ext == "hwp" else "")
+                if not overlay:
+                    set_form(forms.Form(name=name.strip() or default_name, doc=df))
+                    ss.form_msg = ("success", "양식을 나눠 봤어요. 파란 곳(머리)·초록 곳(꼬리)은 그대로 두고, 빨간 곳(문제 자리)에 "
+                                              "새 문제를 넣어요. 나누는 곳·글·모양은 '✏️ 양식 나누기·글·모양 고치기'에서 고칠 수 있어요."
+                                   + (" 여러 쪽 PDF는 첫 쪽 모양을 써요." if len(pages) > 1 else "") + hwp_note)
+                    ss.doc_editor_open = True
+                    st.rerun()
                 for page, regions in zip(pages, found):
                     page.regions = [forms.Region(**r) for r in regions]
                     if not any(r.kind == "content" for r in page.regions):  # 못 찾았으면 본문 전체를 한 칸으로
                         page.regions.append(forms.Region())
                     forms.snap(page)
                 set_form(forms.Form(name=name.strip() or default_name, pages=pages))
-                ss.form_msg = ("success", "양식을 살펴봤어요. 오른쪽 미리보기를 확인하고, 칸이 어긋나면 '✏️ 칸 위치 확인·고치기'에서 고치세요."
-                               + (" HWP 파일은 첫 쪽 미리보기 그림만 읽어서 흐릴 수 있어요 — 한글에서 HWPX로 저장해 올리면 "
-                                  "원본 그대로 쓸 수 있어요." if ext == "hwp" else ""))
+                ss.form_msg = ("success", "양식을 살펴봤어요. 오른쪽 미리보기를 확인하고, 칸이 어긋나면 '✏️ 칸 위치 확인·고치기'에서 "
+                                          "고치세요." + hwp_note)
                 st.rerun()
 
 
@@ -1130,6 +1226,7 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
         st.caption("양식을 쓰는 동안 아래 모양은 문제 번호·소제목·글꼴 모양에만 쓰여요.")
     theme_gallery()
     st.markdown("##### ⚙️ ③ 만들기 설정")
+    question_count(prefix)
     with st.form(f"{prefix}_form"):
         task_type, theme_text = "project", ""
         if not single:
@@ -1140,14 +1237,11 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
             st.caption("  \n".join(f"**{name}** — {desc}" for name, desc in llm.TASK_TYPES.values()))
             theme_text = st.text_input("주제·상황 (선택)", value=ss.get("nl", {}).get("theme", ""), key=f"{prefix}_theme_text",
                                        placeholder="예: 우리 동네 시장 조사, 가족 캠핑 계획 세우기, 우리 반 축구 대회")
-        c1, c2 = st.columns(2)
-        with c1:
-            difficulty = st.segmented_control(
-                "난이도", list(llm.DIFFICULTY), default="standard", key=f"{prefix}_diff",
-                format_func=lambda k: llm.DIFFICULTY[k][0], help="  \n".join(f"{v[0]}: {v[1]}" for v in llm.DIFFICULTY.values()),
-            ) or "standard"
-        with c2:
-            n_questions = st.segmented_control("몇 문제?", [5, 8, 10, 15], default=8, key=f"{prefix}_n") or 8
+        difficulty = st.segmented_control(
+            "난이도", list(llm.DIFFICULTY), default="standard", key=f"{prefix}_diff",
+            format_func=lambda k: llm.DIFFICULTY[k][0], help="  \n".join(f"{v[0]}: {v[1]}" for v in llm.DIFFICULTY.values()),
+        ) or "standard"
+        n_questions = ss.n_questions
         answers = st.toggle("정답·해설 쪽도 함께 만들기 (학습지 뒤에 새 쪽으로)", value=ss.answers_on, key=f"{prefix}_ans")
         review = st.toggle("🔍 다 만든 뒤 AI가 문항을 다시 풀어 보며 정답·학년 범위 검토 (20~40초 더 걸려요)",
                            value=ss.get("review_on", True), key=f"{prefix}_review",

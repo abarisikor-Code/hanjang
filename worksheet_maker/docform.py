@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import html
 import io
 import re
 from collections import Counter
@@ -81,11 +82,105 @@ class DocStyle(BaseModel):
         return round(hwpx._f(v, lo, hi, default), 2)
 
 
+def _clean_box(v: object) -> list[int]:
+    try:
+        y0, x0, y1, x1 = (max(0, min(1000, round(float(n)))) for n in v)  # type: ignore[union-attr]
+    except (TypeError, ValueError):
+        return [0, 0, 10, 10]
+    y0, y1 = sorted((y0, y1))
+    x0, x1 = sorted((x0, x1))
+    return [y0, x0, max(y1, y0 + 5), max(x1, x0 + 5)]
+
+
+class ImgText(BaseModel):
+    """그림 양식의 머리·꼬리에 적힌 글 한 줄(칸). 고치거나 자동으로 채우면 그 자리를 바탕색으로 덮고 새 글을 쓴다."""
+
+    box: list[int]  # [ymin, xmin, ymax, xmax] 0~1000
+    text: str = ""  # 원래 글 (AI가 읽은 것)
+    slot: Literal["", "title", "unit", "goals"] = ""
+    room: list[int] = Field(default_factory=list)  # [xmin, xmax] 그 줄에서 글을 써도 되는 빈 곳 (새 글이 길 때)
+    bg: str = "#FFFFFF"  # 덮을 바탕색 (그림에서 잰 값)
+    color: str = "#000000"  # 글자색 (그림에서 잰 값)
+
+    @field_validator("box", mode="before")
+    @classmethod
+    def _box(cls, v: object) -> list[int]:
+        return _clean_box(v)
+
+    @field_validator("bg", "color", mode="before")
+    @classmethod
+    def _hex(cls, v: object, info) -> str:
+        return hwpx.color(v, "#FFFFFF" if info.field_name == "bg" else "#000000")
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _text(cls, v: object) -> str:
+        return str(v or "")[:300]
+
+    @field_validator("room", mode="before")
+    @classmethod
+    def _room(cls, v: object) -> list[int]:
+        try:
+            x0, x1 = sorted(int(hwpx._f(n, 0, 1000, 0)) for n in v)  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            return []
+        return [x0, x1] if x1 - x0 >= 5 else []
+
+
+class ImgSource(BaseModel):
+    """PDF·사진 양식: 첫 쪽 그림을 가로띠로 나눈다. 머리 [0, head_end] / 문제 자리 [head_end, body_end] / 꼬리 [body_end, foot_end]."""
+
+    image: str  # data:image/jpeg;base64,…
+    width: int
+    height: int
+    head_end: int = 150
+    body_end: int = 950
+    foot_end: int = 950
+    left: int = 60  # 문제 자리의 왼쪽·오른쪽 끝 (0~1000)
+    right: int = 940
+    texts: list[ImgText] = Field(default_factory=list)
+    choices: dict = Field(default_factory=dict)  # AI가 고른 짜임(layout·number·section·question_bold·serif) — 모양 다시 읽기에 쓴다
+    label_box: list[int] = Field(default_factory=list)
+
+    @field_validator("image")
+    @classmethod
+    def _safe_image(cls, v: str) -> str:
+        if not re.fullmatch(r"data:image/(?:png|jpeg);base64,[A-Za-z0-9+/]+=*", v or ""):
+            raise ValueError("양식 그림 형식이 올바르지 않습니다.")
+        return v
+
+    @field_validator("head_end", "body_end", "foot_end", "left", "right", mode="before")
+    @classmethod
+    def _pos(cls, v: object) -> int:
+        return int(hwpx._f(v, 0, 1000, 0))
+
+    @field_validator("label_box", mode="before")
+    @classmethod
+    def _lbox(cls, v: object) -> list[int]:
+        return _clean_box(v) if isinstance(v, (list, tuple)) and len(v) == 4 else []
+
+    def canvas_mm(self) -> tuple[float, float, float, float]:
+        """A4 안에 쪽 그림을 비율 그대로 꽉 채웠을 때의 (left, top, width, height) mm."""
+        ratio = self.width / self.height if self.height else 210 / 297
+        w, h = (210.0, 210.0 / ratio) if ratio >= 210 / 297 else (297.0 * ratio, 297.0)
+        return round((210 - w) / 2, 2), round((297 - h) / 2, 2), round(w, 2), round(h, 2)
+
+    def ordered(self) -> "ImgSource":
+        """띠의 순서를 맞춘다: 0 ≤ head_end ≤ body_end ≤ foot_end ≤ 1000, left < right."""
+        self.head_end = min(self.head_end, 990)
+        self.body_end = max(self.body_end, self.head_end + 10)
+        self.foot_end = max(self.foot_end, self.body_end)
+        if self.right - self.left < 100:
+            self.left, self.right = 60, 940
+        return self
+
+
 class DocForm(BaseModel):
-    doc: dict  # hwpx.to_dict 결과. 쓸 때마다 hwpx.from_dict로 값을 다시 검사한다.
+    doc: dict = Field(default_factory=dict)  # 한글 양식: hwpx.to_dict 결과. 쓸 때마다 hwpx.from_dict로 값을 다시 검사한다.
+    img: ImgSource | None = None  # PDF·사진 양식 (있으면 doc 대신 이것을 쓴다)
     head: int = 0  # 조각 [0, head) = 머리
     foot: int = 0  # 조각 [foot, 끝) = 꼬리.  [head, foot) = 문제 자리 (원래 문제는 지우고 새 문제를 담는다)
-    edits: dict[str, str] = Field(default_factory=dict)  # "조각번호.문단번호" → 사용자가 고친 글
+    edits: dict[str, str] = Field(default_factory=dict)  # "조각번호.문단번호"(그림 양식은 "t글번호") → 사용자가 고친 글
     auto_title: bool = True  # 머리의 제목 칸에 학습지 제목을
     auto_goals: bool = True  # '공부할 내용·학습 목표' 칸에 학습 목표를
     repeat_head: bool = False  # 둘째 쪽부터도 머리를 넣는다
@@ -257,6 +352,9 @@ def derive_style(doc: hwpx.Doc, us: list[hwpx.Unit], head: int, foot: int) -> Do
 # ----- 머리·꼬리 글 고치기 -----
 def editable(form: DocForm) -> list[dict]:
     """화면에서 고칠 수 있는 머리·꼬리의 글. slot: 학습지 내용으로 자동으로 채우는 곳(title/unit/goals)."""
+    if form.img:
+        return [{"key": f"t{i}", "text": t.text, "slot": t.slot, "part": part, "n": i + 1}
+                for i, t, part in _img_texts(form.img)]
     doc = form.parsed()
     us = hwpx.units(doc)
     slots = _slots(doc, us, form.head)
@@ -387,6 +485,8 @@ def classes(st: DocStyle) -> str:
 
 def parts(form: DocForm, ws) -> dict:
     """render가 쪽 틀을 만들 때 쓰는 조각들 (모두 escape된 HTML)."""
+    if form.img:
+        return _img_parts(form, ws)
     doc, us, used = fill(form, ws)
     head = "".join(hwpx.unit_html(doc, u) for u in us[: form.head])
     foot_units = us[form.foot:]
@@ -402,7 +502,10 @@ def parts(form: DocForm, ws) -> dict:
         "foot": Markup(foot),
         "page": f"width:{pg.width:g}mm;height:{pg.height:g}mm;padding:{pg.margin[0]:g}mm {pg.margin[1]:g}mm "
                 f"{pg.margin[2]:g}mm {pg.margin[3]:g}mm",
+        "page_next": f"width:{pg.width:g}mm;height:{pg.height:g}mm;padding:{pg.margin[0]:g}mm {pg.margin[1]:g}mm "
+                     f"{pg.margin[2]:g}mm {pg.margin[3]:g}mm",
         "size": f"{pg.width:g}mm {pg.height:g}mm",
+        "css": "",
         "box_class": classes(st) + (" df-joined" if joined else ""),
         "box_class_next": classes(st) + (" df-joined" if joined and form.repeat_head else ""),
         "box_style": width + css_vars(st),
@@ -458,3 +561,321 @@ def unit_labels(form: DocForm) -> list[str]:
         kind = "표" if (u.rows or _has_box(doc, u)) else "글"
         out.append(f"{i + 1}. [{kind}] {text[:28] + ('…' if len(text) > 28 else '') if text else '(빈 칸)'}")
     return out
+
+
+# ----- PDF·사진 양식: 첫 쪽 그림을 머리·문제 자리·꼬리 띠로 -----
+def _img_array(src: ImgSource):
+    import numpy as np
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(base64.b64decode(src.image.split(",", 1)[1]))).convert("RGB")
+    img.thumbnail((1000, 1000))
+    return np.asarray(img).astype(int)
+
+
+def _hex(rgb) -> str:
+    r, g, b = (int(max(0, min(255, round(float(v))))) for v in rgb)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _crop(a, box: list[int]):
+    h, w = a.shape[:2]
+    y0, x0, y1, x1 = box
+    top, left = int(y0 * h / 1000), int(x0 * w / 1000)
+    return a[top:max(int(y1 * h / 1000), top + 1), left:max(int(x1 * w / 1000), left + 1)]
+
+
+def _common_color(px) -> str:
+    """가장 많은 색 (글자 획은 적으므로 칸의 바탕색이 된다)."""
+    import numpy as np
+
+    flat = (px.reshape(-1, 3) // 8) * 8 + 4
+    if not len(flat):
+        return "#FFFFFF"
+    vals, counts = np.unique(flat, axis=0, return_counts=True)
+    return _hex(vals[counts.argmax()])
+
+
+def _ink(c) -> str:
+    """선·글자의 평균색. 거의 검정(무채색으로 어두움)이면 검정으로."""
+    return "#000000" if c.mean() < 70 and c.max() - c.min() < 40 else _hex(c)
+
+
+def _ink_color(px, bg: str) -> str:
+    """바탕보다 확실히 어두운 점(글자)의 평균색."""
+    lum = px.mean(axis=2)
+    bg_lum = sum(int(bg[i:i + 2], 16) for i in (1, 3, 5)) / 3
+    ink = px[lum < bg_lum - 70]
+    return _ink(ink.mean(axis=0)) if len(ink) else "#000000"
+
+
+def _runs(flags, gap: int) -> list[tuple[int, int]]:
+    """참인 칸이 이어진 구간들 [시작, 끝). gap 이하로 끊긴 곳은 이어 본다."""
+    out: list[list[int]] = []
+    for i, f in enumerate(flags):
+        if not f:
+            continue
+        if out and i - out[-1][1] <= gap:
+            out[-1][1] = i + 1
+        else:
+            out.append([i, i + 1])
+    return [(a_, b) for a_, b in out]
+
+
+def _text_width(text: str, em: float) -> float:
+    """글 한 줄의 대략 너비 (한글 1em, 영문·숫자 0.55em, 빈칸 0.3em, 기호 0.4em)."""
+    w = 0.0
+    for ch in text:
+        if "가" <= ch <= "힣" or ord(ch) > 0x2e80:
+            w += 1.0
+        elif ch.isalnum():
+            w += 0.55
+        elif ch.isspace():
+            w += 0.3
+        else:
+            w += 0.4
+    return w * em
+
+
+def _snap_text(a, box: list[int], text: str = "") -> tuple[list[int], list[int]]:
+    """AI가 잡은 글 상자를 그림의 실제 글자에 맞춘다(AI 좌표는 한 줄쯤 어긋나기도 한다).
+    상자 근처의 글 줄과 낱말 묶음 가운데, AI가 읽은 글의 길이와 너비가 가장 맞고 상자와 많이 겹치는 것을 고른다.
+    표의 선(길게 이어진 가로·세로 줄)은 글자로 보지 않는다. 그 줄에서 새 글을 써도 되는 빈 곳(room)도 잰다."""
+    import numpy as np
+
+    H, W = a.shape[:2]
+    y0, x0, y1, x1 = (int(box[0] * H / 1000), int(box[1] * W / 1000), int(box[2] * H / 1000), int(box[3] * W / 1000))
+    bh = max(4, y1 - y0)
+    sy0, sy1 = max(0, y0 - bh), min(H, y1 + bh)
+    region = a[sy0:sy1]
+    bg = np.array([int(_common_color(region[:, x0:x1 + 1])[i:i + 2], 16) for i in (1, 3, 5)])
+    ink = np.abs(region - bg).sum(axis=2) > 150
+    ink[ink.mean(axis=1) > 0.5, :] = False  # 가로 선
+    lines_v = ink.mean(axis=0) > 0.6  # 세로 선 (칸 테두리)
+    ink[:, lines_v] = False
+    near = ink[:, max(0, x0 - W // 20):min(W, x1 + W // 20)].any(axis=1)
+    runs = [r for r in _runs(near, 1) if r[1] - r[0] >= 3]
+    if not runs:
+        return box, []
+    lines = [ln for ln in text.splitlines() if ln.strip()] or [text]
+    multi = len(lines) > 1
+
+    def overlap(r) -> float:
+        return max(0, min(r[1], y1 - sy0) - max(r[0], y0 - sy0)) / (r[1] - r[0])
+
+    best = None
+    # 여러 줄 글(학습 목표 등)은 상자와 겹치는 줄을 모두, 한 줄 글은 줄 하나씩 견주어 본다
+    groups = [[r for r in runs if overlap(r) >= 0.5] or [max(runs, key=overlap)]] if multi else [[r] for r in runs]
+    for grp in groups:
+        ry0, ry1 = grp[0][0], grp[-1][1]
+        line_h = (ry1 - ry0) / len(grp)
+        cols = _runs(ink[ry0:ry1].any(axis=0), max(2, int(line_h * 0.7)))  # 낱말 사이는 잇고, 떨어진 글은 나눈다
+        thick = [c for c in cols if c[1] - c[0] > max(2, line_h * 0.15)]  # 얇은 세로 선 조각은 글로 보지 않는다
+        cand = [c for c in thick if c[1] > x0 - W // 20 and c[0] < x1 + W // 20]
+        if not cand:
+            continue
+        want = max(_text_width(ln, line_h / 0.8) for ln in lines)
+        for i in range(len(cand)):
+            for j in range(i, len(cand)):
+                cx0, cx1 = cand[i][0], cand[j][1]
+                width_err = abs((cx1 - cx0) - want) / max(want, 1) if text.strip() else 0
+                x_ov = max(0, min(cx1, x1) - max(cx0, x0)) / max(1, cx1 - cx0)
+                y_ov = sum(overlap(r) for r in grp) / len(grp)
+                score = width_err + 0.6 * (1 - y_ov) + 0.4 * (1 - x_ov)
+                if best is None or score < best[0]:
+                    best = (score, ry0, ry1, cx0, cx1, cols)
+    if best is None:
+        return box, []
+    _, ry0, ry1, cx0, cx1, cols = best
+    # 빈 곳: 양옆의 다른 글자나 세로 선까지
+    left_stop = max([c[1] for c in cols if c[1] <= cx0] + [i + 1 for i in np.where(lines_v[:cx0])[0]] + [0])
+    right_stop = min([c[0] for c in cols if c[0] >= cx1] + [cx1 + i for i in np.where(lines_v[cx1:])[0]] + [W])
+    gap = W // 100
+    snapped = _clean_box([(sy0 + ry0) * 1000 / H, cx0 * 1000 / W, (sy0 + ry1) * 1000 / H, cx1 * 1000 / W])
+    room = [round((left_stop + gap) * 1000 / W), round((right_stop - gap) * 1000 / W)]
+    return snapped, room if room[1] - room[0] > snapped[3] - snapped[1] else []
+
+
+def from_image(image: str, width: int, height: int, data: dict) -> DocForm:
+    """양식 첫 쪽 그림과 AI가 찾은 위치·글·짜임으로 그림 양식을 만든다. 색·선·간격은 그림에서 잰다."""
+    raw = data.get("body")
+    body = _clean_box(raw) if isinstance(raw, list) and len(raw) == 4 else [150, 60, 950, 940]
+    src = ImgSource(image=image, width=width, height=height,
+                    head_end=data.get("head_end", body[0]), body_end=body[2],
+                    foot_end=data.get("foot_end", body[2]), left=body[1], right=body[3],
+                    choices={k: data.get(k) for k in ("layout", "number", "section", "question_bold", "serif")},
+                    label_box=data.get("label_box") or []).ordered()
+    a = _img_array(src)
+    for t in data.get("texts") or []:
+        if not isinstance(t, dict) or not isinstance(t.get("box"), list) or len(t["box"]) != 4:
+            continue
+        box, room = _snap_text(a, _clean_box(t["box"]), str(t.get("text", "")))
+        px = _crop(a, box)
+        bg = _common_color(px)
+        slot = t.get("role") if t.get("role") in ("title", "unit", "goals") else ""
+        src.texts.append(ImgText(box=box, room=room, text=str(t.get("text", "")).strip(), slot=slot, bg=bg,
+                                 color=_ink_color(px, bg)))
+    src.texts.sort(key=lambda t: (t.box[0], t.box[1]))
+    seen: set[str] = set()  # 자동 칸은 종류마다 하나만 (제목이 여러 줄로 잡히면 가장 위의 것)
+    for t in src.texts:
+        if t.slot in seen:
+            t.slot = ""
+        elif t.slot:
+            seen.add(t.slot)
+    return DocForm(img=src, style=derive_img_style(src))
+
+
+def derive_img_style(src: ImgSource) -> DocStyle:
+    """문제 자리 모양: 짜임·번호·소제목은 AI가 고른 선택지, 선 색·굵기·답 줄 간격·칸 색은 그림에서 잰 값."""
+    import numpy as np
+
+    ch = src.choices or {}
+    st = DocStyle(layout=ch.get("layout") if ch.get("layout") in LAYOUTS else "lines",
+                  num=ch.get("number") if ch.get("number") in NUMS else "dot",
+                  sec=ch.get("section") if ch.get("section") in SECS else "plain",
+                  q_bold=bool(ch.get("question_bold")), font="바탕" if ch.get("serif") else "")
+    a = _img_array(src)
+    _, _, w_mm, _ = src.canvas_mm()
+    mm_px = w_mm / a.shape[1]
+    body = _crop(a, [src.head_end, src.left, src.body_end, src.right])
+    if body.size:
+        lum = body.mean(axis=2)
+        rows = np.where((lum < 140).mean(axis=1) > 0.5)[0]  # 본문 폭의 반 넘게 이어진 가로선
+        groups: list[list[int]] = []
+        for r in rows:
+            if groups and r - groups[-1][-1] <= 1:
+                groups[-1].append(int(r))
+            else:
+                groups.append([int(r)])
+        if groups:
+            n = float(np.median([len(g) for g in groups]))
+            # 그림 한 점 ≈ 0.2mm라 가는 선도 한 점으로 보인다 → 한 점은 가는 선(0.12mm)으로
+            st.border_w = st.line_w = round(max(0.12, min(0.5, (n - 0.5) * mm_px)), 2)
+            line_px = body[[r for g in groups for r in g]].reshape(-1, 3)
+            ink = line_px[line_px.mean(axis=1) < 128]
+            if len(ink):
+                st.border = st.line = _ink(ink.mean(axis=0))
+            centers = [sum(g) / len(g) for g in groups]
+            gaps = [(q - p) * mm_px for p, q in zip(centers, centers[1:]) if 5 <= (q - p) * mm_px <= 16]
+            if gaps:
+                st.line_gap = round(float(np.median(gaps)) * 2) / 2
+    if src.label_box:
+        y0, x0, y1, x1 = src.label_box
+        inset = [y0 + (y1 - y0) // 5, x0 + (x1 - x0) // 5, y1 - (y1 - y0) // 5, x1 - (x1 - x0) // 5]
+        bg = _common_color(_crop(a, inset))
+        st.label_bg = "" if min(int(bg[i:i + 2], 16) for i in (1, 3, 5)) > 238 else bg
+        st.label_w = round((x1 - x0) / 1000 * w_mm, 1)
+    if st.layout == "boxes":
+        st.radius = 2.0
+    return DocStyle.model_validate(st.model_dump())
+
+
+def _img_texts(src: ImgSource):
+    """머리·꼬리 띠 안에 있는 글 (나누는 곳을 옮겨 문제 자리에 들어간 글은 빼고)."""
+    for i, t in enumerate(src.texts):
+        if t.box[2] <= src.head_end + 5:
+            yield i, t, "head"
+        elif t.box[0] >= src.body_end - 5 and t.box[2] <= src.foot_end + 5:
+            yield i, t, "foot"
+
+
+def _band(src: ImgSource, y0: int, y1: int, overlays: list, x0: int = 0, x1: int = 1000) -> str:
+    """그림의 [y0, y1] × [x0, x1] 띠. 고친 글은 원래 글 자리를 바탕색으로 덮고 그 위에 쓴다(글자 크기는 스크립트가 칸에 맞춘다).
+    x0·x1을 주면 그 폭만 (문제 칸 안에 흘려 넣는 꼬리)."""
+    cl, _, w, h = src.canvas_mm()
+    xspan = max(1, x1 - x0)
+    out = []
+    for t, text in overlays:
+        pad = 4  # 원래 글자 가장자리까지 덮도록 조금 넓게 (0~1000)
+        bx0, bx1 = t.room or [t.box[1] - pad, t.box[3] + pad]  # 새 글이 길면 그 줄의 빈 곳까지 쓴다
+        ty0, tx0 = max(y0, t.box[0] - pad), max(x0, min(bx0, t.box[1] - pad))
+        ty1, tx1 = min(y1, t.box[2] + pad), min(x1, max(bx1, t.box[3] + pad))
+        old_lines = max(1, t.text.count("\n") + 1)
+        glyph_mm = h * (t.box[2] - t.box[0]) / 1000 / old_lines
+        size = max(6.0, min(glyph_mm / 0.8 * 2.835, 26))  # 원래 글자 높이(≈ 0.8em) → pt
+        # 원래 글이 칸 가운데 있었으면 가운데, 오른쪽에 붙어 있었으면 오른쪽
+        mid, room_mid, room_w = (t.box[1] + t.box[3]) / 2, (tx0 + tx1) / 2, max(1, tx1 - tx0)
+        align = "center" if abs(mid - room_mid) < room_w * 0.12 else "flex-end" if mid > room_mid else "flex-start"
+        span = max(1, y1 - y0)
+        style = (f"top:{(ty0 - y0) / span * 100:.3f}%;height:{(ty1 - ty0) / span * 100:.3f}%;"
+                 f"left:{(tx0 - x0) / xspan * 100:.2f}%;width:{(tx1 - tx0) / xspan * 100:.2f}%;"
+                 f"background:{t.bg};color:{t.color};font-size:{size:.1f}pt;justify-content:{align}"
+                 + (";font-weight:700" if t.slot == "title" else ""))
+        out.append(f'<div class="img-text" style="{style}">{html.escape(text)}</div>')
+    left = "" if (x0, x1) != (0, 1000) else f"margin-left:{cl:g}mm;"
+    style = (f"width:{w * xspan / 1000:.2f}mm;height:{h * (y1 - y0) / 1000:.2f}mm;{left}"
+             f"background-position:{-w * x0 / 1000:.2f}mm {-h * y0 / 1000:.2f}mm")
+    return f'<div class="img-band" style="{style}">{"".join(out)}</div>'
+
+
+def _img_parts(form: DocForm, ws) -> dict:
+    src = form.img
+    cl, ct, w, h = src.canvas_mm()
+    used: set[str] = set()
+    head_over, foot_over = [], []
+    for i, t, part in _img_texts(src):
+        key = f"t{i}"
+        text = None
+        if key in form.edits:
+            text = form.edits[key]
+        elif t.slot == "title" and form.auto_title and ws.title:
+            text = _keep_decor(t.text, ws.title)
+        elif t.slot == "unit" and ws.unit:
+            text = ws.unit
+        elif t.slot == "goals" and form.auto_goals and ws.goals:
+            text = "\n".join(re.sub(r"\*\*|\[\[|\]\]", "", g) for g in ws.goals)
+        if text is None:
+            continue
+        used.add(t.slot)
+        (head_over if part == "head" else foot_over).append((t, text))
+    head = _band(src, 0, src.head_end, head_over) if src.head_end > 0 else ""
+    foot = (_band(src, src.body_end, src.foot_end, foot_over, src.left, src.right)
+            if src.foot_end - src.body_end >= 5 else "")
+    bottom = max(5.0, 297 - ct - h * src.foot_end / 1000)
+    ml, mr = cl + w * src.left / 1000, 210 - (cl + w * src.right / 1000)
+    st = form.style
+    return {
+        "head": Markup(head),
+        "foot": Markup(foot),
+        "page": f"width:210mm;height:297mm;padding:{ct:g}mm 0 {bottom:.1f}mm 0",
+        "page_next": f"width:210mm;height:297mm;padding:{max(12.0, ct):g}mm 0 {bottom:.1f}mm 0",
+        "size": "210mm 297mm",
+        # 그림은 한 번만 넣는다 (ImgSource가 data URI 모양을 검사했다)
+        "css": Markup(f'.img-band {{ background-image: url("{src.image}"); background-size: {w:g}mm {h:g}mm; }}'),
+        "box_class": classes(st),
+        "box_class_next": classes(st),
+        "box_style": f"margin-left:{ml:.1f}mm;margin-right:{mr:.1f}mm;" + css_vars(st),
+        "repeat_head": form.repeat_head,
+        "has_title": "title" in used,
+        "has_goals": "goals" in used,
+    }
+
+
+def img_preview(src: ImgSource) -> bytes:
+    """나눈 곳을 보여 주는 그림: 머리(파랑)·문제 자리(빨강)·꼬리(초록) 띠와 고칠 수 있는 글 번호."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.open(io.BytesIO(base64.b64decode(src.image.split(",", 1)[1]))).convert("RGB")
+    img.thumbnail((800, 800))
+    w, h = img.size
+    draw = ImageDraw.Draw(img, "RGBA")
+    try:
+        font = ImageFont.load_default(size=16)
+    except TypeError:  # 오래된 Pillow
+        font = ImageFont.load_default()
+    red = (220, 30, 30)
+    for y0, y1, c in ((0, src.head_end, (30, 90, 220)), (src.head_end, src.body_end, red),
+                      (src.body_end, src.foot_end, (30, 154, 70))):
+        if y1 - y0 < 2:
+            continue
+        x0, x1 = (src.left, src.right) if c == red else (0, 1000)
+        draw.rectangle((x0 * w / 1000, y0 * h / 1000, x1 * w / 1000 - 1, y1 * h / 1000 - 1),
+                       outline=c + (255,), width=3, fill=c + (26,))
+    for i, t, _ in _img_texts(src):
+        y0, x0, y1, x1 = (v * (h if k % 2 == 0 else w) / 1000 for k, v in enumerate(t.box))
+        draw.rectangle((x0, y0, x1, y1), outline=(80, 80, 80, 255), width=1)
+        draw.rectangle((x0, y0 - 17, x0 + 22, y0), fill=(50, 50, 50, 235))
+        draw.text((x0 + 3, y0 - 17), str(i + 1), fill=(255, 255, 255), font=font)
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()

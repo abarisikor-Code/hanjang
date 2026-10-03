@@ -452,7 +452,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 
 ## 만들 학습지
 - 대상: 초등 {grade}학년. 난이도: {diff_name} — {diff_rule}
-{f"- 문항 수: {n_questions}개 안팎. 단답형·선택형·빈칸 채우기·O/X·서술형을 내용에 맞게 섞는다." if kind == "standard" else ""}
+{f"- 문항 수: 꼭 {n_questions}개 (선생님이 정한 수 — 번호가 붙는 문항 구성요소의 개수). ""단답형·선택형·빈칸 채우기·O/X·서술형을 내용에 맞게 섞는다." if kind == "standard" else ""}
 {MIX_RULES.get(mix, MIX_RULES["separate"]) if len(standards) > 1 else ""}
 ## 학습지 유형: {kinds_mod.label(kind)}
 {kinds_mod.rule(kind, n_questions)}
@@ -533,7 +533,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 
 ## 만들 학습지
 - 대상: {level_label}. 난이도: {diff_name} — {diff_rule}
-- 문항 수: {n_questions}개 안팎. 단답형·선택형·빈칸 채우기·O/X·서술형을 학습 목표에 맞게 섞는다.
+- 문항 수: 꼭 {n_questions}개 (선생님이 정한 수 — 번호가 붙는 문항 구성요소의 개수). 단답형·선택형·빈칸 채우기·O/X·서술형을 학습 목표에 맞게 섞는다.
 - 순서: section(소제목)으로 도입·전개·정리를 나누고, concept(핵심 개념)·reading(읽기 자료)·activity(활동)를 필요한 만큼 넣은 뒤 문항, 마지막에 reflection(스스로 점검).
 - 학습 목표를 빠짐없이 다루고, 목표에 없는 내용으로 넓히지 않는다.
 - 모든 문항에 answer(정답)와 solution(해설 1~2문장)을 쓴다. 선택형은 정답 번호만 ①~⑤로(예: ②), O/X는 '(1) O (2) X'처럼. 빈칸은 본문에 [[정답]]으로.
@@ -625,7 +625,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 - 대상: 초등 {grade}학년. 난이도: {diff_name} — {diff_rule}
 - 어느 한 과목이 들러리가 되지 않게, 각 과목의 성취기준이 실제로 쓰이도록 한다.
   (예: 수학+사회라면 우리 고장 조사 자료를 표·그래프로 정리하고 해석하기)
-- 확인 문항 {n_questions}개 안팎.{" 소제목이 과목을 알려 주므로 문항 앞에 과목 표시는 하지 않는다." if separate else " 각 문항 body 맨 앞에 [수학], [사회]처럼 그 문항이 쓰는 과목을 표시한다."}
+- 확인 문항 꼭 {n_questions}개.{" 소제목이 과목을 알려 주므로 문항 앞에 과목 표시는 하지 않는다." if separate else " 각 문항 body 맨 앞에 [수학], [사회]처럼 그 문항이 쓰는 과목을 표시한다."}
 {("- 순서: " + ("과목마다 section → (필요하면 text·concept) → 문항, 과목 순서는 위 목록 순서 → 마지막 reflection(과목별 점검)." if separate
   else "section(주제 소개) → text 또는 reading(상황·자료) → activity와 문항 → 마지막 reflection(과목별 스스로 점검 포함).")) if kind == "standard"
   else f"## 학습지 유형: {kinds_mod.label(kind)}{chr(10)}{kinds_mod.rule(kind, n_questions)}{chr(10)}- 과목이 여럿이므로 위 유형의 짜임새 안에서 과목마다 고르게 다룬다."}
@@ -787,6 +787,77 @@ def find_form_regions(*, api_key: str, pages: list[bytes], model: str = MODELS[0
             out[n - 1].append({"kind": r.get("kind") if r.get("kind") in ("content", "title") else "content",
                                "box": r["box"], "erase": bool(r.get("erase"))})
     return out
+
+
+# ----- 내 학습지 양식(PDF·사진): 한글 양식처럼 머리·문제 자리·꼬리로 나누기 -----
+_BOX = {"type": "array", "items": {"type": "integer"}, "description": "[ymin, xmin, ymax, xmax], 쪽 전체를 0~1000으로 본 좌표"}
+_LAYOUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "head_end": {"type": "integer", "description": "머리(제목·단원·학년·반·이름 칸·학습 목표 칸)의 아래 끝 y (0~1000)"},
+        "body": {**_BOX, "description": "문제·활동·답 칸이 있는 본문 영역 [ymin, xmin, ymax, xmax]. 머리·꼬리는 뺀다"},
+        "foot_end": {"type": "integer", "description": "본문 아래 꼬리(※ 안내, 출처 등)의 아래 끝 y. 꼬리가 없으면 body의 ymax"},
+        "texts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "box": _BOX,
+                    "text": {"type": "string", "description": "그 자리에 적힌 글 그대로"},
+                    "role": {"type": "string", "enum": ["title", "unit", "goals", "other"]},
+                },
+                "required": ["box", "text", "role"],
+            },
+            "description": "머리와 꼬리에 적힌 글 줄",
+        },
+        "layout": {"type": "string", "enum": ["lines", "table", "boxes"]},
+        "number": {"type": "string", "enum": ["dot", "paren", "circle", "box"]},
+        "section": {"type": "string", "enum": ["plain", "bar", "underline", "box"]},
+        "question_bold": {"type": "boolean"},
+        "serif": {"type": "boolean", "description": "본문 글꼴이 명조·바탕 계열이면 true"},
+        "label_box": {**_BOX, "description": "본문에서 번호·이름표가 적힌 칸 하나의 위치. 그런 칸이 없으면 빈 배열"},
+    },
+    "required": ["head_end", "body", "foot_end", "texts", "layout", "number", "section", "question_bold", "serif",
+                 "label_box"],
+}
+
+
+def analyze_form_page(*, api_key: str, page: bytes, model: str = MODELS[0]) -> dict:
+    """학습지 양식 첫 쪽 그림(JPEG)에서 머리·문제 자리·꼬리의 위치, 머리·꼬리의 글, 문제 자리의 짜임(정해진 선택지)을 찾는다.
+    색·선 굵기·간격 같은 모양 값은 묻지 않는다 — docform이 그림에서 직접 잰다."""
+    if not api_key.strip():
+        raise AnalyzeError("Gemini API 키가 없습니다. 왼쪽 설정에 입력해 주세요.")
+    from google import genai
+
+    prompt = """첨부한 그림은 학습지 양식의 첫 쪽이다. 이 양식의 머리와 꼬리는 그대로 두고, 본문(문제 자리)의 원래 문제는 지운 뒤
+새 문제를 이 양식과 같은 짜임으로 채우려 한다. 아래를 찾아라. 좌표는 모두 쪽 전체를 0~1000으로 본 값이다.
+
+- head_end: 머리의 아래 끝. 머리 = 쪽 맨 위의 제목, 단원·차시, 학년·반·번호·이름 칸, '공부할 내용·학습 목표' 칸.
+  첫 문제·첫 활동·첫 소제목(예: '1. 영양소 의미')은 머리가 아니다.
+- body: 본문 영역 [ymin, xmin, ymax, xmax]. 문제·활동·답 칸·표가 있는 곳 전체. ymin은 head_end 근처.
+  xmin·xmax는 본문 표·선의 왼쪽·오른쪽 끝.
+- foot_end: 본문 아래에 '※ 안내', 출처, 학교 이름 같은 꼬리가 있으면 그 아래 끝. 없으면 body의 ymax와 같게.
+  쪽 번호만 있으면 꼬리로 보지 않는다.
+- texts: 머리와 꼬리에 적힌 글을 줄(또는 칸)마다. box는 글자에 꼭 맞게.
+  role: 학습지 제목 = title, 단원 이름 = unit, '공부할 내용·학습 목표' 이름표 옆 칸의 목표 문장들 = goals(여러 줄이면 그 칸 전체를 한 상자로),
+  나머지('이름', '학년 반', 이름표 글자, 안내) = other. 본문 안의 글은 넣지 않는다.
+- layout: 본문 문제의 짜임.
+  lines = 번호와 문제 글 아래에 답 쓰는 가로줄·빈 곳이 있다.
+  table = 표 안에서 왼쪽 칸에 번호·이름표, 오른쪽 칸에 내용·답 칸.
+  boxes = 둥근 상자·떨어진 상자에 번호·이름표 상자와 답 상자가 나란히.
+- number: 문제 번호 모양. 1. = dot, 1) = paren, ① = circle, 네모 안 번호 = box.
+- section: 소제목 모양. 굵은 글씨만 = plain, 왼쪽 세로 막대 = bar, 밑줄 = underline, 색 칸·상자 안 = box.
+- question_bold: 문제 글이 굵은 글씨인가.
+- serif: 본문 글꼴이 명조·바탕처럼 삐침이 있는 글꼴인가.
+- label_box: 본문에서 번호·이름표(예: '탄수화물', '하는 일')가 적힌 칸 하나. 그런 칸이 없으면 [].
+"""
+    client = genai.Client(api_key=api_key.strip())
+    raw, _ = _generate_with_retry(client, model, prompt, [Attachment("page1.jpg", "image/jpeg", page)], _LAYOUT_SCHEMA)
+    try:
+        data = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip()))
+    except json.JSONDecodeError as e:
+        raise AnalyzeError("양식을 분석하지 못했어요. 다시 시도해 주세요.") from e
+    return data if isinstance(data, dict) else {}
 
 
 # ----- 고치기: 구성요소 하나를 AI가 다시 써 준다 -----
