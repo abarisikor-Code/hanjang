@@ -23,7 +23,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-from worksheet_maker import curriculum, diagrams, extract, forms, images, kinds, llm
+from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx, images, kinds, llm
 from worksheet_maker.render import LEVELS, render
 from worksheet_maker.saved import LoadError, unpack
 from worksheet_maker.schema import BLOCK_TYPES, IMAGE_SIZES, QUESTION_TYPES, Block, Worksheet
@@ -738,6 +738,124 @@ def _region_editor(form: forms.Form) -> None:
         st.button("＋ 문제 칸 더하기", key=f"fr{rev}_{pi}_add", on_click=_region_add, args=(pi,))
 
 
+def _doc_change(field: str, key: str, original: str = "") -> None:
+    """한글 양식 고치기: 나누는 곳 / 자동 칸 / 머리·꼬리 글 / 문제 자리 모양."""
+    form = current_form()
+    if not form or not form.doc:
+        return
+    d, value = form.doc, ss[key]
+    if field == "head":
+        d.head = int(value)
+        d.foot = max(d.foot, d.head)
+    elif field == "foot":
+        d.foot = max(int(value), d.head)
+    elif field in ("auto_title", "auto_goals", "repeat_head"):
+        setattr(d, field, bool(value))
+    elif field == "no_bg":
+        d.style.label_bg = "" if value else "#EEEEEE"
+    elif field.startswith("style."):
+        d.style = docform.DocStyle.model_validate({**d.style.model_dump(), field[6:]: value})
+    elif field.startswith("edit:"):
+        k = field[5:]
+        text = str(value).strip()
+        if text and text != original:
+            d.edits[k] = text
+        else:
+            d.edits.pop(k, None)  # 비우거나 원래 글로 돌리면 자동(또는 원래 글)으로
+    ss.form = form.model_dump()  # 입력칸 번호가 그대로라 form_rev는 올리지 않는다
+
+
+def _doc_reset(what: str) -> None:
+    form = current_form()
+    if not form or not form.doc:
+        return
+    d = form.doc
+    if what == "edits":
+        d.edits = {}
+    else:  # 지금 나눈 곳으로 모양을 다시 읽는다
+        doc = d.parsed()
+        d.style = docform.derive_style(doc, hwpx.units(doc), d.head, d.foot)
+    set_form(form)
+
+
+def _doc_editor(form: forms.Form) -> None:
+    d = form.doc
+    rev = ss.get("form_rev", 0)
+    k = f"df{rev}"
+    labels = docform.unit_labels(d)
+    n = len(labels)
+
+    st.markdown("**① 나누기** — 위에서부터 차례로 놓인 조각을 머리·문제 자리·꼬리로 나눠요.")
+    c1, c2 = st.columns(2)
+    c1.selectbox("머리는 여기까지", list(range(n + 1)), index=min(d.head, n), key=f"{k}_head",
+                 format_func=lambda i: "머리 없음" if i == 0 else labels[i - 1],
+                 on_change=_doc_change, args=("head", f"{k}_head"),
+                 help="제목·이름 칸·학습 목표처럼 그대로 둘 부분의 마지막 조각")
+    foot_opts = list(range(d.head, n + 1))
+    c2.selectbox("꼬리는 여기부터", foot_opts, index=foot_opts.index(min(max(d.foot, d.head), n)), key=f"{k}_foot",
+                 format_func=lambda i: "꼬리 없음" if i == n else labels[i],
+                 on_change=_doc_change, args=("foot", f"{k}_foot"),
+                 help="맨 아래 '※ 안내'처럼 문제 뒤에 그대로 붙일 부분의 첫 조각")
+    st.caption("🟦 머리(그대로) · 🟥 문제 자리(원래 문제를 지우고 새 문제를 이 모양으로) · 🟩 꼬리(그대로)")
+    st.iframe(docform.split_preview(d), height=460)
+
+    st.markdown("**② 머리·꼬리 글 고치기**")
+    a1, a2 = st.columns(2)
+    a1.checkbox("제목 칸에 학습지 제목 넣기", value=d.auto_title, key=f"{k}_at",
+                on_change=_doc_change, args=("auto_title", f"{k}_at"))
+    a2.checkbox("'공부할 내용' 칸에 학습 목표 넣기", value=d.auto_goals, key=f"{k}_ag",
+                on_change=_doc_change, args=("auto_goals", f"{k}_ag"))
+    slot_names = {"title": "학습지 제목", "unit": "단원", "goals": "학습 목표"}
+    items = docform.editable(d)
+    if not items:
+        st.caption("머리·꼬리에 고칠 글이 없어요.")
+    for e in items:
+        ek = f"{k}_e_{e['key']}"
+        part = "머리" if e["part"] == "head" else "꼬리"
+        if e["slot"]:
+            st.text_input(f"{part} · 자동: {slot_names[e['slot']]}", value=d.edits.get(e["key"], ""), key=ek,
+                          placeholder=f"비워 두면 {slot_names[e['slot']]}이(가) 들어가요 (원래: {e['text'][:30]})",
+                          on_change=_doc_change, args=(f"edit:{e['key']}", ek, ""))
+        else:
+            st.text_input(f"{part}", value=d.edits.get(e["key"], e["text"]), key=ek,
+                          on_change=_doc_change, args=(f"edit:{e['key']}", ek, e["text"]))
+    if d.edits:
+        st.button("고친 글 모두 되돌리기", key=f"{k}_reset_edits", on_click=_doc_reset, args=("edits",))
+
+    st.markdown("**③ 문제 자리 모양** — 양식에서 읽은 값이에요. 바꾸면 오른쪽 미리보기에 바로 보여요.")
+    sty = d.style
+    layouts = list(docform.LAYOUTS)
+    st.radio("짜임", layouts, index=layouts.index(sty.layout), format_func=docform.LAYOUTS.get, key=f"{k}_layout",
+             on_change=_doc_change, args=("style.layout", f"{k}_layout"))
+    s1, s2, s3 = st.columns(3)
+    nums, secs = list(docform.NUMS), list(docform.SECS)
+    s1.selectbox("문제 번호", nums, index=nums.index(sty.num), format_func=docform.NUMS.get, key=f"{k}_num",
+                 on_change=_doc_change, args=("style.num", f"{k}_num"))
+    s2.selectbox("소제목", secs, index=secs.index(sty.sec), format_func=docform.SECS.get, key=f"{k}_sec",
+                 on_change=_doc_change, args=("style.sec", f"{k}_sec"))
+    s3.number_input("글자 크기(pt)", 7.0, 20.0, float(sty.size), step=0.5, key=f"{k}_size",
+                    on_change=_doc_change, args=("style.size", f"{k}_size"))
+    s1, s2, s3 = st.columns(3)
+    s1.color_picker("번호 칸·소제목 칸 색", sty.label_bg or "#FFFFFF", key=f"{k}_bg",
+                    on_change=_doc_change, args=("style.label_bg", f"{k}_bg"))
+    s1.checkbox("칸 색 없음", value=not sty.label_bg, key=f"{k}_nobg", on_change=_doc_change, args=("no_bg", f"{k}_nobg"))
+    s2.color_picker("칸 테두리 색", sty.border, key=f"{k}_bc", on_change=_doc_change, args=("style.border", f"{k}_bc"))
+    s3.color_picker("답 줄 색", sty.line, key=f"{k}_lc", on_change=_doc_change, args=("style.line", f"{k}_lc"))
+    s1, s2, s3 = st.columns(3)
+    s1.number_input("답 줄 간격(mm)", 5.0, 20.0, float(sty.line_gap), step=0.5, key=f"{k}_gap",
+                    help="줄 수는 '내용 고치기'에서 문항마다 정해요", on_change=_doc_change, args=("style.line_gap", f"{k}_gap"))
+    s2.number_input("번호 칸 너비(mm)", 8.0, 60.0, float(sty.label_w), step=1.0, key=f"{k}_lw",
+                    on_change=_doc_change, args=("style.label_w", f"{k}_lw"))
+    s3.number_input("모서리 둥글기(mm)", 0.0, 8.0, float(sty.radius), step=0.5, key=f"{k}_r",
+                    on_change=_doc_change, args=("style.radius", f"{k}_r"))
+    b1, b2 = st.columns(2)
+    b1.checkbox("문제 글 굵게", value=sty.q_bold, key=f"{k}_qb", on_change=_doc_change, args=("style.q_bold", f"{k}_qb"))
+    b2.checkbox("둘째 쪽부터도 머리 넣기", value=d.repeat_head, key=f"{k}_rh",
+                on_change=_doc_change, args=("repeat_head", f"{k}_rh"))
+    st.button("🔄 양식에서 모양 다시 읽기", key=f"{k}_restyle", on_click=_doc_reset, args=("style",),
+              help="나누는 곳을 바꾼 뒤 누르면 새 문제 자리에서 모양을 다시 읽어요")
+
+
 def _use_saved_form(name: str) -> None:
     try:
         set_form(forms.load_form(name))
@@ -752,7 +870,10 @@ def form_panel() -> None:
         (st.success if kind == "success" else st.error)(msg)
     form = current_form()
     if form:
-        st.success(f"📄 **{md(form.name)}** 양식에 넣고 있어요 ({len(form.pages)}쪽 · 문제 칸 {form.n_regions()}개)")
+        if form.doc:
+            st.success(f"📄 **{md(form.name)}** 한글 양식에 넣고 있어요 — 머리·꼬리는 그대로, 문제 자리에 새 문제를 담아요")
+        else:
+            st.success(f"📄 **{md(form.name)}** 양식에 넣고 있어요 ({len(form.pages)}쪽 · 문제 칸 {form.n_regions()}개)")
         c1, c2 = st.columns(2)
         c1.button("양식 끄기 (기본 모양으로)", on_click=set_form, args=(None,), width="stretch", key="form_off")
         if not LOCAL:  # 인터넷판: 서버에 두지 않고 내 컴퓨터로 내려받는다
@@ -763,8 +884,12 @@ def form_panel() -> None:
                                help="다음에 '저장해 둔 양식 파일 열기'로 다시 쓸 수 있어요.")
         else:
             _form_save_popover(c2, form)
-        with st.expander("✏️ 칸 위치 확인·고치기", expanded=False):
-            _region_editor(form)
+        if form.doc:
+            with st.expander("✏️ 양식 나누기·글·모양 고치기", expanded=ss.pop("doc_editor_open", False)):
+                _doc_editor(form)
+        else:
+            with st.expander("✏️ 칸 위치 확인·고치기", expanded=False):
+                _region_editor(form)
     if not LOCAL:
         st.file_uploader("📂 저장해 둔 양식 파일 열기 (.hanjang-form.json)", type=["json"], key="form_file",
                          on_change=_open_form_file)
@@ -803,17 +928,36 @@ def _form_save_popover(col, form: forms.Form) -> None:
 
 def _form_new_expander(form: forms.Form | None, saved: list[str]) -> None:
     with st.expander("➕ 새 양식 올리기", expanded=not form and not saved):
-        st.caption("머리말·테두리가 있는 **빈 양식**이 가장 깔끔해요. 문제가 이미 적힌 학습지를 올리면 "
-                   "그 문제 자리를 흰색으로 지우고 새 문제를 넣어요. PDF는 앞 4쪽까지 쓰고, 내용이 넘치면 마지막 쪽이 반복돼요.")
-        up = st.file_uploader("양식 파일 (PDF·사진·캡처)", type=["pdf", "png", "jpg", "jpeg", "webp"], key="form_up")
+        st.caption("**한글(HWPX) 파일**이 가장 정확해요 — 제목·이름 칸·표 모양을 그대로 읽고, 문제 자리에 새 문제를 "
+                   "그 양식 모양(번호·칸 색·답 줄)으로 넣어요. 쪽 수 제한 없이 이어져요. "
+                   "PDF·사진은 쪽 그림 위의 칸에 넣어요 (앞 4쪽까지, 넘치면 마지막 쪽 반복). "
+                   "HWP는 한글에서 '다른 이름으로 저장 → HWPX'로 바꿔 올리면 가장 좋아요.")
+        up = st.file_uploader("양식 파일 (한글 HWPX·HWP·PDF·사진)", type=["hwpx", "hwp", "pdf", "png", "jpg", "jpeg", "webp"],
+                              key="form_up")
         with st.form("form_new", border=False):
             name = st.text_input("양식 이름", placeholder="예: 우리 반 수학 익힘 양식", key="form_new_name")
             go_form = st.form_submit_button("✨ 양식 살펴보기 (10초쯤)", type="primary", width="stretch")
         if go_form and not up:
             st.warning("양식 파일을 먼저 올려 주세요.")
         if go_form and up:
+            ext = up.name.rsplit(".", 1)[-1].lower()
+            default_name = re.sub(r"\.[A-Za-z0-9]+$", "", up.name) or "내 양식"
+            if ext == "hwpx":  # 한글 파일은 AI 없이 짜임을 그대로 읽는다
+                try:
+                    df = docform.from_hwpx(up.getvalue())
+                except hwpx.HwpxError as e:
+                    st.error(str(e))
+                    return
+                set_form(forms.Form(name=name.strip() or default_name, doc=df))
+                ss.form_msg = ("success", "한글 양식을 읽었어요. 파란 곳(머리)·초록 곳(꼬리)은 그대로 두고, 빨간 곳(문제 자리)에 "
+                                          "새 문제를 넣어요. 나누는 곳·글·모양은 '✏️ 양식 나누기·글·모양 고치기'에서 고칠 수 있어요.")
+                ss.doc_editor_open = True
+                st.rerun()
+            data, mime = up.getvalue(), up.type or ""
             try:
-                pages = forms.pages_from_upload(up.getvalue(), up.type or "")
+                if ext == "hwp":  # 옛 한글 파일은 안에 든 첫 쪽 미리보기 그림만 쓸 수 있다
+                    data, mime = forms.hwp_preview(data), "image/png"
+                pages = forms.pages_from_upload(data, mime)
                 with ai_status("양식에서 문제를 넣을 칸을 찾는 중"):
                     found = llm.find_form_regions(api_key=api_key, pages=[forms.page_bytes(p) for p in pages], model=model)
             except (forms.FormError, llm.AnalyzeError) as e:
@@ -824,9 +968,10 @@ def _form_new_expander(form: forms.Form | None, saved: list[str]) -> None:
                     if not any(r.kind == "content" for r in page.regions):  # 못 찾았으면 본문 전체를 한 칸으로
                         page.regions.append(forms.Region())
                     forms.snap(page)
-                default_name = re.sub(r"\.[A-Za-z0-9]+$", "", up.name) or "내 양식"
                 set_form(forms.Form(name=name.strip() or default_name, pages=pages))
-                ss.form_msg = ("success", "양식을 살펴봤어요. 오른쪽 미리보기를 확인하고, 칸이 어긋나면 '✏️ 칸 위치 확인·고치기'에서 고치세요.")
+                ss.form_msg = ("success", "양식을 살펴봤어요. 오른쪽 미리보기를 확인하고, 칸이 어긋나면 '✏️ 칸 위치 확인·고치기'에서 고치세요."
+                               + (" HWP 파일은 첫 쪽 미리보기 그림만 읽어서 흐릴 수 있어요 — 한글에서 HWPX로 저장해 올리면 "
+                                  "원본 그대로 쓸 수 있어요." if ext == "hwp" else ""))
                 st.rerun()
 
 

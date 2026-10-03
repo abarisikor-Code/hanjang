@@ -24,19 +24,32 @@ html, body { background: #fff; overflow: hidden; }
 </style>{% endif %}
 <body class="{{ theme_classes }}">
 {% if show_print_button %}<button class="print-btn" type="button" onclick="window.print()">인쇄하기</button>{% endif %}
-{% if form_pages %}
+{% if form_pages or doc %}
 {# 내 학습지 양식: 내용을 숨은 곳에 먼저 그린 뒤, 아래 스크립트가 양식 쪽의 칸에 차례로 옮겨 담는다 #}
 <div id="form-src" hidden>
 {% if not form_has_title %}<h1 class="form-flow-title">{{ ws.title }}</h1>{% endif %}
-{% if ws.goals %}
+{% if ws.goals and not (doc and doc.has_goals) %}
 <section class="goals">
   <span class="tag">학습 목표</span>
   <ul>{% for g in ws.goals %}<li>{{ g|inline }}</li>{% endfor %}</ul>
 </section>
 {% endif %}
 {% include "blocks.html.j2" %}
+{% if doc and doc.foot %}<div class="doc-foot">{{ doc.foot }}</div>{% endif %}
 </div>
 <div id="form-out"></div>
+{% if doc %}
+{# 한글 양식: 첫 쪽은 머리 + 문제 자리, 다음 쪽부터는 문제 자리만 (머리 반복을 고르면 머리도) #}
+<style>@page form { size: {{ doc.size }}; }</style>
+<template class="form-tpl"><section class="form-page doc-page" style="{{ doc.page }}">
+  <div class="doc-head">{{ doc.head }}</div>
+  <div class="form-box {{ doc.box_class }}" style="{{ doc.box_style }}"></div>
+</section></template>
+<template class="form-tpl"><section class="form-page doc-page doc-next" style="{{ doc.page }}">
+  {% if doc.repeat_head %}<div class="doc-head">{{ doc.head }}</div>{% endif %}
+  <div class="form-box {{ doc.box_class_next }}" style="{{ doc.box_style }}"></div>
+</section></template>
+{% endif %}
 {% for fp in form_pages %}
 <template class="form-tpl"><section class="form-page">
   <div class="form-canvas" style="{{ fp.canvas }}">
@@ -102,7 +115,7 @@ html, body { background: #fff; overflow: hidden; }
   </ol>
 </main>
 {% endif %}
-{% if form_pages %}
+{% if form_pages or doc %}
 <script>
 document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-data(양식 그림)를 읽어야 해서 다 읽은 뒤에
   // 내 학습지 양식: 내용을 양식의 문제 칸에 차례로 담는다. 칸이 차면 다음 칸, 다음 쪽으로 넘기고,
@@ -128,7 +141,8 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
     while (count === 0 || (queue.length && count < 40)) {
       var k = Math.min(count, tpls.length - 1);
       var page = tpls[k].content.firstElementChild.cloneNode(true);
-      page.querySelector("img.form-bg").src = images[k];
+      var bg = page.querySelector("img.form-bg");
+      if (bg) bg.src = images[k];
       out.appendChild(page);
       count++;
       Array.prototype.forEach.call(page.querySelectorAll(".form-title"), function (el) {
@@ -164,7 +178,8 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
 
   function layout() {
     root.style.setProperty("--fit", "1");  // 인쇄와 같은 크기로 재고 나서 화면에 맞게 줄인다
-    var scales = [1, 0.93, 0.86], done = false;
+    // 그림 양식은 쪽 수 안에 넣으려고 글자를 조금 줄여 본다. 한글 양식은 쪽을 늘린다.
+    var scales = {{ "[1]" if doc else "[1, 0.93, 0.86]" }}, done = false;
     for (var i = 0; i < scales.length && !done; i++) done = build(scales[i]) <= tpls.length;
     if (!done) build(1);  // 줄여도 넘치면 원래 크기로 쪽을 늘린다
     fit();

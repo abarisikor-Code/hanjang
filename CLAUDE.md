@@ -91,8 +91,21 @@
   `template.form-tpl` 쪽을 복제해 칸에 블록을 차례로 담는다(넘치면 다음 칸·쪽, 양식 쪽 수를 넘으면 글자 1→0.93→0.86배를 시도하고
   그래도 넘치면 마지막 쪽 반복, 제목 칸은 쪽마다). 쪽 그림은 `hanjang-data` JSON에서 스크립트가 넣는다(HTML에 한 번만 들어가게).
   인쇄는 `@page form { margin: 0 }`. 앱 상태는 `ss.form`(dict) — `set_form()`으로 바꾼다. 저장해 둔 양식은 `forms/*.json`.
+- `worksheet_maker/hwpx.py` — 한글(HWPX) 파일 읽기(AI 없음): 문단·표(칸 위치·합친 칸·크기·테두리·칠·배경 그림)·글자·그림을
+  `Doc`으로 꺼내고 원본에 가깝게 HTML로 그린다(`para_html`/`table_html`, 글은 escape, 공백은 pre-wrap). 단위 HWPUNIT=1/7200인치.
+  `to_dict`/`from_dict`로 저장하며, `from_dict`가 색(#rrggbb)·그림(data URI)·정렬·선 모양·숫자 범위를 다시 검사한다(저장 파일은
+  사용자가 고칠 수 있으므로 — style 속성에 그대로 들어가는 값은 반드시 이 검사를 거친다). `units`는 위에서부터의 조각(문단 하나,
+  또는 글이 든 줄 묶음이 셋 이상인 큰 표의 줄 묶음 — rowspan으로 이어진 줄은 함께).
+- `worksheet_maker/docform.py` — **한글 양식**(`forms.Form.doc`): 조각을 머리 `[0, head)` / 문제 자리 / 꼬리 `[foot, 끝)`로 나눈다
+  (`guess_split`: 이름 칸·'공부할 내용' 이름표가 있는 마지막 조각까지 머리, 첫 '1.' 문제부터는 머리 아님, 끝의 '※'는 꼬리).
+  `derive_style`이 문제 자리에서 짜임(lines 답 줄 표 / table 이름표 칸 / boxes 그림 조각 둥근 상자)·글꼴·번호 모양·칸 색·선을 읽어
+  `DocStyle`로. `_slots`가 머리의 제목(가장 큰 글씨 묶음의 마지막, 그 앞은 단원)·'공부할 내용' 옆 칸·'단원' 옆 칸을 찾아
+  `fill`이 학습지 제목·목표·단원을 넣는다(사용자가 고친 글 `edits`가 먼저). render는 `parts()`로 첫 쪽 틀(머리 + 문제 칸)과
+  다음 쪽 틀을 만들고, 그림 양식과 같은 스크립트가 문제를 칸에 흘려 담는다(한글 양식은 글자를 줄이지 않고 쪽을 늘린다).
+  모양 차이는 worksheet.css의 `.df-*`·`dn-*`·`dsec-*`와 `--df-*` 변수로만. 앱 편집 화면은 `app._doc_editor`.
+  .hwp는 `forms.hwp_preview`(olefile)로 첫 쪽 미리보기 그림만 꺼내 그림 양식으로 쓴다.
 - `worksheet_maker/saved.py` — 저장한 HTML 안의 `<script type="application/json" id="hanjang-data">`에 구조·테마·학교급·꼬리말을 담고(`pack`), 다시 꺼낸다(`unpack`).
-  저장 형식을 바꿀 때는 `FORMAT_VERSION`을 올리고 예전 파일도 열리게 유지한다. (2: `form` 추가)
+  저장 형식을 바꿀 때는 `FORMAT_VERSION`을 올리고 예전 파일도 열리게 유지한다. (2: `form` 추가, 3: `form.doc` 한글 양식)
 - **배포**(키는 각자): `app.LOCAL`(`HANJANG_LOCAL=1`, `run.bat`·포터블·`.claude/launch.json`의 app만 준다)일 때만 서버 `.env` 키를
   읽고, '이 컴퓨터에 키 기억하기'(`_remember_key` → `.env`), 양식·모양 디스크 저장을 쓴다. 그 밖(Streamlit Cloud 인터넷판)은 키를
   세션에만 두고, 양식은 `.hanjang-form.json` 내려받기·파일 열기, 모양 저장은 끈다(여러 사람이 한 서버를 쓰므로). 포터블은

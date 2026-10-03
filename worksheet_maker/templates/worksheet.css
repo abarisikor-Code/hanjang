@@ -302,6 +302,82 @@ main.sheet { counter-reset: secnum; }
 }
 .form-flow-title { font-size: 1.5em; line-height: 1.3; margin: 0 0 3mm; }
 
+/* ----- 한글 양식(docform): 원래 머리·꼬리는 파일 그대로(hwpx.py가 글자·칸 모양을 style 속성으로),
+   문제 자리는 양식에서 읽은 값(--df-*)으로 같은 문제 HTML을 다르게 꾸민다 ----- */
+.doc-page { display: flex; flex-direction: column; }
+.doc-head, .doc-foot { flex: none; font-size: 10pt; line-height: 1.6; }
+.doc-page .hp, .doc-foot .hp { min-height: 1em; word-break: keep-all; overflow-wrap: anywhere; white-space: pre-wrap; }
+.doc-page .ht, .doc-foot .ht { font-size: inherit; }
+.doc-page .ht td, .doc-foot .ht td { text-align: inherit; }
+.doc-page .form-box { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; padding: 2mm 0 0; }
+.doc-foot { margin-top: 2mm; }
+
+/* 공통: 학습지 테마의 번호·소제목 꾸밈을 지우고 양식의 모양으로 */
+.form-box.df .q-num {
+  flex: 0 0 auto; width: auto; height: auto; margin: 0 1.5mm 0 0; padding: 0;
+  border: 0; border-radius: 0; background: none; color: inherit; font-size: inherit; line-height: inherit;
+}
+.form-box.df .q-num::before, .form-box.df .q-num::after { content: none; }
+.form-box.dn-dot .q-num::after { content: "."; }
+.form-box.dn-paren .q-num::after { content: ")"; }
+.form-box.dn-circle .q-num, .form-box.dn-box .q-num {
+  display: inline-flex; align-items: center; justify-content: center; align-self: flex-start;
+  min-width: 1.5em; height: 1.5em; margin-top: calc((var(--lh) * 1em - 1.5em) / 2);
+  border: var(--df-bw) solid currentColor; font-size: .9em; line-height: 1;
+}
+.form-box.dn-circle .q-num { border-radius: 50%; }
+.form-box.dn-box .q-num { background: var(--df-lbg); }
+.form-box.df .q-text p:first-child { font-weight: var(--df-qw); }
+.form-box.df .line { border-bottom: var(--df-lw2) solid var(--df-lc); }
+.form-box.df .ans-label { display: none; }
+.form-box.df .answer-box { border: 0; padding: 0; }
+.form-box.df .draw-box { border: var(--df-bw) solid var(--df-bc); border-radius: var(--df-r); }
+.form-box.df th, .form-box.df td { border-color: var(--df-bc); }
+.form-box.df thead th, .form-box.df .cornell-table th { background: var(--df-lbg); }
+.form-box.df h2.sec {
+  margin: 3mm 0 2mm; padding: 0; border: 0; background: none; color: inherit;
+  font-size: 1.15em; font-weight: 700; text-align: left;
+}
+.form-box.df h2.sec::before, .form-box.df h2.sec::after { content: none; }
+.form-box.dsec-bar h2.sec { border-left: 1.2mm solid var(--df-bc); padding: .5mm 0 .5mm 2.5mm; }
+.form-box.dsec-underline h2.sec { border-bottom: var(--df-bw) solid var(--df-bc); padding-bottom: 1mm; }
+.form-box.dsec-box h2.sec { background: var(--df-lbg); border: var(--df-bw) solid var(--df-bc); padding: 1.5mm 3mm; }
+.form-box.df .blk, .form-box.df .goals, .form-box.df .tag, .form-box.df .act-num { border-color: var(--df-bc); }
+
+/* 줄 공책형: 번호. 문제 / 그 아래 답 줄 */
+.form-box.df-lines .blk { margin: 0 0 calc(6mm * var(--gap)); }
+.form-box.df-lines .answer-short, .form-box.df-lines .answer-box { margin: 2mm 0 0; }
+
+/* 표형·상자형: 왼쪽 번호 칸 + 오른쪽 내용 칸. 번호 칸은 문항 높이만큼 늘어난다 */
+.form-box.df-table, .form-box.df-boxes { padding-top: 0; }
+.form-box.df-table { flex: 0 1 auto; max-height: 100%; border: var(--df-bw) solid var(--df-bc); }
+.doc-page .form-box.df-table { flex: 1 1 0; }
+.form-box.df-table.df-joined { border-top: 0; }
+.form-box.df-table > * { margin: 0; padding: 2mm 3mm; border-bottom: var(--df-bw) solid var(--df-bc); }
+.form-box.df-table > h2.sec { margin: 0; padding: 1.5mm 3mm; background: var(--df-lbg); border-left: 0; }
+.form-box.df-boxes > * { margin: 0 0 1.5mm; }
+.form-box.df-table > .blk.q, .form-box.df-boxes > .blk.q {
+  position: relative; min-height: 12mm; padding-left: calc(var(--df-lw) + 3mm);
+}
+.form-box.df-boxes > .blk.q { padding: 2.5mm 3mm 2.5mm calc(var(--df-lw) + 4.5mm); }
+.form-box.df-boxes > .blk.q::before {
+  content: ""; position: absolute; top: 0; bottom: 0; right: 0; left: calc(var(--df-lw) + 1.5mm);
+  border: var(--df-bw) solid var(--df-bc); border-radius: var(--df-r); pointer-events: none;
+}
+.form-box.df-table > .blk.q .q-num, .form-box.df-boxes > .blk.q .q-num {
+  position: absolute; top: 0; bottom: 0; left: 0; width: var(--df-lw); height: auto; min-width: 0; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--df-lbg); border: 0; font-size: 1.05em; font-weight: 700;
+}
+.form-box.df-table > .blk.q .q-num { border-right: var(--df-bw) solid var(--df-bc); border-radius: 0; }
+.form-box.df-boxes > .blk.q .q-num { border-radius: var(--df-r); }
+.form-box.df-table .answer-short, .form-box.df-table .answer-box, .form-box.df-table .draw-box,
+.form-box.df-table .options, .form-box.df-table .ox-table,
+.form-box.df-boxes .answer-short, .form-box.df-boxes .answer-box, .form-box.df-boxes .draw-box,
+.form-box.df-boxes .options, .form-box.df-boxes .ox-table { margin-left: 0; }
+.form-box.df-table .ox-table, .form-box.df-boxes .ox-table { width: 100%; }
+.form-box.df-table .draw-box, .form-box.df-boxes .draw-box { border-style: dashed; }
+
 /* ----- 분수·수식 (render._math가 만든다) ----- */
 .frac {
   display: inline-flex; flex-direction: column; vertical-align: middle;

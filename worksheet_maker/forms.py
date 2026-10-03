@@ -15,6 +15,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .docform import DocForm
+
 FORM_DIR = Path(__file__).resolve().parent.parent / "forms"
 MAX_PAGES = 4
 MAX_SIDE = 2000  # 긴 변 2000px ≈ A4 세로 170dpi: 인쇄에 충분하고 파일은 너무 크지 않게
@@ -69,9 +71,12 @@ class FormPage(BaseModel):
 
 class Form(BaseModel):
     name: str = "내 양식"
-    pages: list[FormPage]
+    pages: list[FormPage] = Field(default_factory=list)  # PDF·사진 양식: 쪽 그림 위의 칸
+    doc: DocForm | None = None  # 한글(HWPX) 양식: 파일의 짜임을 그대로 HTML로
 
     def n_regions(self) -> int:
+        if self.doc:
+            return 1
         return sum(1 for p in self.pages for r in p.regions if r.kind == "content")
 
 
@@ -111,6 +116,17 @@ def pages_from_upload(data: bytes, mime: str) -> list[FormPage]:
     if not pages:
         raise FormError("양식 파일에 쪽이 없어요.")
     return pages
+
+
+def hwp_preview(data: bytes) -> bytes:
+    """옛 한글(HWP) 파일 안에 든 첫 쪽 미리보기 그림 (본문은 읽지 않는다)."""
+    try:
+        import olefile
+
+        with olefile.OleFileIO(io.BytesIO(data)) as ole:
+            return ole.openstream("PrvImage").read()
+    except Exception as e:
+        raise FormError("HWP 파일을 읽을 수 없어요. 한글에서 '다른 이름으로 저장 → HWPX'로 저장해 올려 주세요.") from e
 
 
 def snap(page: FormPage) -> None:

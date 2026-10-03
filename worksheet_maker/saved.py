@@ -18,7 +18,7 @@ from .forms import Form
 from .schema import Worksheet
 from .theme import Theme
 
-FORMAT_VERSION = 2  # 2: 내 학습지 양식(form) 추가. 1로 저장한 파일도 그대로 열린다.
+FORMAT_VERSION = 3  # 2: 내 학습지 양식(form) 추가, 3: 한글 양식(form.doc). 예전 파일도 그대로 열린다.
 _DATA_TAG = re.compile(
     r'<script[^>]*\bid=["\']hanjang-data["\'][^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE
 )

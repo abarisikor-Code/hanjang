@@ -9,6 +9,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 from markupsafe import Markup, escape
 
+from . import docform
 from .diagrams import render_svg
 from .forms import Form
 from .saved import pack
@@ -157,7 +158,8 @@ def render(
 
     running = " · ".join(x for x in (ws.subject, ws.title) if x)
     form = None if thumbnail else form
-    form_pages = [_form_page(p) for p in form.pages] if form else []
+    doc = docform.parts(form.doc, ws) if form and form.doc else None  # 한글 양식: 머리·꼬리 HTML과 문제 자리 모양
+    form_pages = [_form_page(p) for p in form.pages] if form and not doc else []
     return _env().get_template("worksheet.html.j2").render(
         ws=ws,
         blocks=numbered,
@@ -171,7 +173,8 @@ def render(
         show_print_button=show_print_button and not thumbnail,
         thumbnail=thumbnail,
         form_pages=form_pages,
-        form_has_title=any(r.kind == "title" for p in (form.pages if form else []) for r in p.regions),
+        doc=doc,
+        form_has_title=doc["has_title"] if doc else any(r.kind == "title" for p in (form.pages if form else []) for r in p.regions),
         saved_data=pack(ws, theme, level, footer, show_answers, form),  # 이 HTML을 앱에 다시 올리면 편집 상태로 열린다
     )
 
