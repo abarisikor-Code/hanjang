@@ -127,6 +127,11 @@
 - 그림 카드(`scene`)·그림그래프(`pictograph`)·묶음 그림의 이모지 `item`은 Noto Emoji(흑백) 글꼴로 SVG에 그린다.
   SVG 속성 안 글꼴 이름은 작은따옴표로 써야 한다(큰따옴표면 style 속성이 깨진다).
 
+## 버전·배포 (롤백할 수 있게)
+- 새 작업은 `dev` 갈래에 커밋한다. `main`은 인터넷판(Streamlit Cloud가 main을 자동 배포)이므로 사용자가 배포하라고 할 때만
+  dev → main 합치기 + `vX.Y` 태그 + push. 되돌리기는 main을 이전 태그로 (사용자 확인 후).
+- 바뀐 점은 `CHANGELOG.md`(개발노트, 선생님이 읽는 말로)의 '작업 중'에 적고, 배포할 때 그 칸에 버전 번호·날짜를 붙인다.
+
 ## 새 구성요소 추가 순서 (예: 선 잇기)
 1. `schema.BLOCK_TYPES`에 type, 이름, AI용 설명, 사용 필드를 추가 (문항이면 `QUESTION_TYPES`에도)
 2. `app.FIELDS`에 편집 칸(필드, 라벨)을 추가
