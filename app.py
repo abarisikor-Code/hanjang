@@ -58,7 +58,8 @@ def key_help() -> None:
         "4. 왼쪽 **⚙️ 설정**의 'Gemini API 키' 칸에 붙여 넣습니다.\n\n"
         "무료로 쓸 수 있어요. 하루에 만들 수 있는 양에 한도가 있어서, 많이 만든 날은 다음 날 다시 채워집니다.")
 
-st.set_page_config(page_title="한장 · 학습지 만들기", page_icon="📝", layout="wide")
+_ICON = Path(__file__).parent / "assets" / "icon.png"  # 바탕화면·작업 표시줄·브라우저 탭에 같은 아이콘
+st.set_page_config(page_title="한장 · 학습지 만들기", page_icon=str(_ICON) if _ICON.exists() else "📝", layout="wide")
 
 # 앱 화면(학습지 아님) 꾸밈: 버튼·글자를 조금 크게, 카드를 보기 좋게
 st.markdown(

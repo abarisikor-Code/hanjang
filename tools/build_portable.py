@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -57,16 +56,10 @@ GUIDE = r"""한장 — 교육과정에 맞는 A4 학습지 만들기 (포터블�
 
 
 def make_icon(path: Path) -> None:
-    """'한' 글자 아이콘 (맑은 고딕이 있으면 그 글꼴로)."""
-    from PIL import Image, ImageDraw, ImageFont
+    """assets/icon.png(분홍 바탕 + 종이 한 장 + 숫자 1)을 윈도우 아이콘(.ico)으로."""
+    from PIL import Image
 
-    img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((8, 8, 248, 248), radius=56, fill=(47, 93, 155, 255))
-    font_path = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "malgunbd.ttf"
-    font = ImageFont.truetype(str(font_path), 150) if font_path.exists() else ImageFont.load_default()
-    d.text((128, 132), "한", font=font, fill="white", anchor="mm")
-    img.save(path, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    Image.open(ROOT / "assets" / "icon.png").save(path, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 
 
 def copy_app(dst: Path) -> None:
@@ -76,6 +69,7 @@ def copy_app(dst: Path) -> None:
     shutil.copytree(ROOT / "worksheet_maker", dst / "worksheet_maker", ignore=ignore)
     shutil.copytree(ROOT / "data", dst / "data", ignore=ignore)
     shutil.copytree(ROOT / ".streamlit", dst / ".streamlit")
+    shutil.copytree(ROOT / "assets", dst / "assets")
     (dst / "examples").mkdir()
     for p in (ROOT / "examples").iterdir():
         if p.suffix in (".json", ".png"):
