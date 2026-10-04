@@ -128,8 +128,15 @@
     `ss.doc_level`(학교급), `ss.footer_text`, `ss.answers_on`, 고른 성취기준 `ss.sel`. 위젯은 `w_*` 키 + `on_change=_sync`.
     (Streamlit은 그 화면에 그려지지 않은 위젯의 값을 지운다.) 학년마다 과목 목록이 달라 과목 위젯 키에 학년을 붙인다.
   - 만들기는 `_run(req)` 하나로: `req`를 `ss.last_req`에 저장해 완성 화면의 '🔄 다시 만들기'에 쓴다.
-  - 완성 화면: 왼쪽 탭(내용 고치기 `block_list` / 모양 `theme_gallery` / 제목·목표 `header_panel`+AI 채우기 / 더 많은 설정),
-    오른쪽 미리보기. 화면이 바뀌면 `st.html(..., unsafe_allow_javascript=True)`로 맨 위로 스크롤한다.
+  - 완성 화면: 왼쪽 탭(내용 고치기 `block_list` / 모양 `theme_gallery` / 제목·목표 `header_panel`+AI 채우기 / 더 많은 설정,
+    `st.tabs(key="res_tab")`라 코드로 탭을 고를 수 있다), 오른쪽 미리보기 `preview_editor`.
+  - **학습지 위에서 바로 고치기**: `render(edit=True)`가 블록마다 `data-bi`(blocks.html.j2의 `{{ ed }}`)를 달고
+    `templates/edit.html.j2`(도구 막대·끌어서 옮기기·Ctrl+Z, 인쇄 때 숨김)를 넣는다 — 저장·인쇄용 HTML에는 넣지 않는다.
+    미리보기는 `st.components.v2` 컴포넌트(`_PREVIEW_JS`)가 sandbox iframe으로 그리고, 틀 안의 postMessage를 `setTriggerValue('action')`로
+    앱에 넘긴다. `_preview_action`이 값을 다시 검사해 적용(옮기기·빼기·✏️는 그 칸 펼치기·🔄는 `ss.ai_pending` → `_ask_ai` 추천안).
+    구조를 바꾸는 편집(`_move`·`_copy`·`_delete`·`_apply_suggestion`·끌기)은 `_snapshot()`으로 `ss.ws_hist`(30개)에 앞 상태를 두고
+    `_undo()`가 되살리며 그 칸들의 입력칸 키를 지운다. 펼침 칸 키는 `{bid}_exp{exp_rev}` — 이미 그려진 expander는 expanded 값을
+    무시하므로 ✏️ 때 `exp_rev`를 올려 새로 만든다. 실제 앱 시험은 헤드리스 엣지 + DevTools(틀은 OOPIF라 Target.setAutoAttach). 화면이 바뀌면 `st.html(..., unsafe_allow_javascript=True)`로 맨 위로 스크롤한다.
   - 상태: `ss.ws`(dict, 블록마다 편집용 `_id`), `ss.theme`(dict). 통째로 바꿀 때는 `set_worksheet()`/`set_theme()`을 써서
     `rev`를 올려야 입력칸이 새 값으로 다시 그려진다.
 - 테마 선택지에 frame(쪽 테두리: 인쇄 시 `.page-frame`이 position:fixed로 쪽마다 반복), qstyle(문항 꾸밈), deco(소제목 아이콘),

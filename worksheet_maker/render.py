@@ -123,7 +123,8 @@ def _env() -> Environment:
         svg=render_svg,
         option_text=_option_text,
     )
-    env.globals.update(CIRCLED=CIRCLED, IMAGE_SIZES=IMAGE_SIZES, option_cols=_option_cols, concept_item=_concept_item)
+    env.globals.update(CIRCLED=CIRCLED, IMAGE_SIZES=IMAGE_SIZES, option_cols=_option_cols, concept_item=_concept_item,
+                       edit_attr=lambda i: Markup(f' data-bi="{int(i)}"'))
     return env
 
 
@@ -132,6 +133,7 @@ def render(
     show_print_button: bool = True,
     thumbnail: bool = False,  # 학습지 모양 고르기용 작은 미리보기 (좁은 종이)
     form: Form | None = None,  # 내 학습지 양식: 이 양식 쪽 그림 위의 칸에 내용을 담는다
+    edit: bool = False,  # 앱 미리보기 전용: 학습지 위에서 바로 고치는 도구(끌어서 옮기기·도구 막대)를 넣는다
 ) -> str:
     lv = dict(LEVELS.get(level, LEVELS["middle"]))
     theme = theme or Theme()
@@ -172,6 +174,7 @@ def render(
         show_answers=show_answers,
         show_print_button=show_print_button and not thumbnail,
         thumbnail=thumbnail,
+        editable=edit and not thumbnail,
         form_pages=form_pages,
         doc=doc,
         form_has_title=doc["has_title"] if doc else any(r.kind == "title" for p in (form.pages if form else []) for r in p.regions),

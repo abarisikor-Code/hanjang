@@ -1,0 +1,121 @@
+{# 앱 미리보기에서만 넣는 '학습지 위에서 바로 고치기' 도구. 인쇄·저장 파일에는 들어가지 않는다(render(edit=True)일 때만).
+   문제에 마우스를 올리면 도구 막대, ⋮⋮를 끌면 순서 바꾸기. 동작은 앱(app.preview_editor)에 postMessage로 알린다. #}
+<style>
+[data-bi] { position: relative; border-radius: 2mm; outline: 1.5px dashed transparent; outline-offset: 1mm; transition: outline-color .12s; }
+[data-bi].ed-hover { outline-color: #8a8a8a; }
+[data-bi].ed-drag { opacity: .35; }
+[data-bi].ed-before { box-shadow: 0 -2.5mm 0 -1.5mm #2f6fde; }
+[data-bi].ed-after { box-shadow: 0 2.5mm 0 -1.5mm #2f6fde; }
+#ed-bar {
+  position: absolute; z-index: 50; display: none; gap: 1px; padding: 2px;
+  background: #fff; border: 1px solid #bbb; border-radius: 7px; box-shadow: 0 2px 8px rgba(0,0,0,.18);
+  font: 13px/1 "Noto Sans KR", "Malgun Gothic", sans-serif;
+}
+#ed-bar button {
+  border: 0; background: none; padding: 5px 7px; border-radius: 5px; cursor: pointer; font: inherit; color: #222; white-space: nowrap;
+}
+#ed-bar button:hover { background: #eef3fd; }
+#ed-bar .ed-grip { cursor: grab; color: #555; }
+#ed-bar .ed-del:hover { background: #fdecec; color: #b42318; }
+#ed-tip {
+  position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 60; display: none;
+  background: #222; color: #fff; padding: 6px 12px; border-radius: 6px; font: 13px "Noto Sans KR", sans-serif;
+}
+@media print { #ed-bar, #ed-tip { display: none !important; } [data-bi] { outline: none !important; box-shadow: none !important; } }
+</style>
+<div id="ed-bar" role="toolbar" aria-label="이 칸 고치기">
+  <button class="ed-grip" draggable="true" title="끌어서 순서 바꾸기">⋮⋮ 옮기기</button>
+  <button data-act="up" title="한 칸 위로">▲</button>
+  <button data-act="down" title="한 칸 아래로">▼</button>
+  <button data-act="edit" title="왼쪽에서 이 칸 고치기">✏️ 고치기</button>
+  <button data-act="ai" title="AI가 같은 내용으로 다른 문제를 추천">🔄 다른 문제</button>
+  <button data-act="delete" class="ed-del" title="이 칸 빼기 (되돌리기로 살릴 수 있어요)">🗑</button>
+</div>
+<div id="ed-tip"></div>
+<script>
+(function () {
+  var bar = document.getElementById("ed-bar"), tip = document.getElementById("ed-tip");
+  var cur = null, dragFrom = null, mark = null;
+  function send(msg) { msg.hanjang = "edit"; window.parent.postMessage(msg, "*"); }
+  function idx(el) { return parseInt(el.getAttribute("data-bi"), 10); }
+  function blockAt(t) { return t && t.closest ? t.closest("[data-bi]") : null; }
+  function say(text) { tip.textContent = text; tip.style.display = "block"; }
+
+  function place(el) {
+    var r = el.getBoundingClientRect();
+    bar.style.display = "flex";
+    var top = window.scrollY + r.top - bar.offsetHeight + 4;
+    bar.style.top = Math.max(window.scrollY + 2, top) + "px";
+    bar.style.left = Math.max(4, window.scrollX + r.right - bar.offsetWidth) + "px";
+  }
+  function hover(el) {
+    if (cur === el) return;
+    if (cur) cur.classList.remove("ed-hover");
+    cur = el;
+    if (el) { el.classList.add("ed-hover"); place(el); } else { bar.style.display = "none"; }
+  }
+  document.addEventListener("mousemove", function (e) {
+    if (dragFrom !== null) return;
+    if (bar.contains(e.target)) return;
+    hover(blockAt(e.target));
+  });
+  document.addEventListener("mouseleave", function () { if (dragFrom === null) hover(null); });
+  window.addEventListener("scroll", function () {
+    if (cur) place(cur);
+    clearTimeout(window.__edScroll);
+    window.__edScroll = setTimeout(function () { send({ action: "scroll", y: Math.round(window.scrollY) }); }, 150);
+  });
+
+  bar.addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-act]");
+    if (!b || !cur) return;
+    var act = b.getAttribute("data-act");
+    send({ action: act, i: idx(cur) });
+    say({ up: "한 칸 위로 옮기는 중…", down: "한 칸 아래로 옮기는 중…", edit: "왼쪽에 이 칸을 펼쳤어요",
+          ai: "AI가 다른 문제를 만드는 중… 왼쪽에 추천안이 떠요", "delete": "빼는 중… 되돌리기로 살릴 수 있어요" }[act] || "");
+  });
+
+  // 끌어서 순서 바꾸기: 도구 막대의 '⋮⋮ 옮기기'를 잡고 다른 칸 위·아래에 놓는다
+  bar.querySelector(".ed-grip").addEventListener("dragstart", function (e) {
+    if (!cur) { e.preventDefault(); return; }
+    dragFrom = idx(cur);
+    cur.classList.add("ed-drag");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(dragFrom));
+    try { e.dataTransfer.setDragImage(cur, 20, 20); } catch (err) {}
+    say("놓을 곳(다른 칸의 위쪽·아래쪽)으로 끌어 오세요");
+  });
+  function clearMark() { if (mark) mark.classList.remove("ed-before", "ed-after"); mark = null; }
+  document.addEventListener("dragover", function (e) {
+    if (dragFrom === null) return;
+    var el = blockAt(e.target);
+    if (!el) return;
+    e.preventDefault();
+    var r = el.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+    clearMark();
+    mark = el;
+    el.classList.add(after ? "ed-after" : "ed-before");
+    el.dataset.edAfter = after ? "1" : "0";
+  });
+  document.addEventListener("drop", function (e) {
+    if (dragFrom === null || !mark) return;
+    e.preventDefault();
+    var to = idx(mark), after = mark.dataset.edAfter === "1";
+    if (to !== dragFrom) { send({ action: "move", i: dragFrom, to: to, after: after }); say("옮기는 중…"); }
+  });
+  document.addEventListener("dragend", function () {
+    if (cur) cur.classList.remove("ed-drag");
+    clearMark();
+    dragFrom = null;
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) { e.preventDefault(); send({ action: "undo" }); say("되돌리는 중…"); }
+  });
+  window.addEventListener("message", function (e) {  // 앱이 새로 그린 뒤 보던 자리로
+    if (e.source !== window.parent || !e.data || e.data.hanjang !== "scrollTo") return;
+    window.scrollTo(0, e.data.y || 0);
+  });
+  send({ action: "ready" });
+})();
+</script>

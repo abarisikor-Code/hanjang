@@ -5,21 +5,22 @@
 
 {% for b, num in blocks %}
 {% set ex = extras[loop.index0] %}
+{% set ed = edit_attr(loop.index0) if editable else "" %}
 {% if b.type == "section" %}
-<h2 class="sec">{{ (b.title or b.body)|inline }}</h2>
+<h2 class="sec"{{ ed }}>{{ (b.title or b.body)|inline }}</h2>
 
 {% elif b.type in ("text", "concept", "reading") and not (b.body or b.items) %}
 {# 내용 없이 제목만 있는 상자는 빈 상자 대신 작은 제목으로 보여준다 #}
-{% if b.title %}<h3 class="blk-title sub">{{ b.title|inline }}</h3>{% endif %}
+{% if b.title %}<h3 class="blk-title sub"{{ ed }}>{{ b.title|inline }}</h3>{% endif %}
 
 {% elif b.type == "text" %}
-<section class="blk text breakable">
+<section class="blk text breakable"{{ ed }}>
   {% if b.title %}<h3 class="blk-title">{{ b.title }}</h3>{% endif %}
   {{ b.body|paras }}
 </section>
 
 {% elif b.type == "concept" %}
-<section class="blk concept">
+<section class="blk concept"{{ ed }}>
   <span class="tag">{{ b.title or "핵심 개념" }}</span>
   {% if b.body %}{{ b.body|paras }}{% endif %}
   {% if b.items %}
@@ -32,20 +33,20 @@
 </section>
 
 {% elif b.type == "reading" %}
-<section class="blk reading breakable">
+<section class="blk reading breakable"{{ ed }}>
   <span class="tag">{{ b.title or "읽기 자료" }}</span>
   <div class="reading-body">{{ b.body|paras }}</div>
   {% if b.source %}<p class="source">— {{ b.source }}</p>{% endif %}
 </section>
 
 {% elif b.type == "quote" %}
-<figure class="blk quote">
+<figure class="blk quote"{{ ed }}>
   <blockquote>{{ b.body|paras }}</blockquote>
   {% if b.source %}<figcaption>— {{ b.source }}</figcaption>{% endif %}
 </figure>
 
 {% elif b.type == "table" %}
-<section class="blk tbl breakable">
+<section class="blk tbl breakable"{{ ed }}>
   {% if b.title %}<h3 class="blk-title">{{ b.title }}</h3>{% endif %}
   {% if b.rows %}
   <table>
@@ -58,26 +59,26 @@
 </section>
 
 {% elif b.type == "activity" %}
-<section class="blk activity">
+<section class="blk activity"{{ ed }}>
   <h3 class="act-head"><span class="act-num">활동 {{ num }}</span>{{ b.title|option_text|inline }}</h3>
   {% if b.body %}{{ b.body|paras }}{% endif %}
   {% if b.items %}<ol class="steps">{% for s in b.items %}<li>{{ s|inline }}</li>{% endfor %}</ol>{% endif %}
 </section>
 
 {% elif b.type == "short_answer" %}
-<section class="blk q short">
+<section class="blk q short"{{ ed }}>
   {{ q_head(num, b.body, pts=ex.pts) }}
   <div class="answer-short"><span class="ans-label">답</span><div class="ans-lines">{{ lines(b.answer_lines()) }}</div></div>
 </section>
 
 {% elif b.type == "essay" %}
-<section class="blk q essay">
+<section class="blk q essay"{{ ed }}>
   {{ q_head(num, b.body, pts=ex.pts) }}
   <div class="answer-box">{{ lines(b.answer_lines()) }}</div>
 </section>
 
 {% elif b.type == "multiple_choice" %}
-<section class="blk q mc">
+<section class="blk q mc"{{ ed }}>
   {{ q_head(num, b.body, pts=ex.pts) }}
   <ol class="options" style="--cols: {{ [option_cols(b.items), 2]|min if ws.kind == "test" else option_cols(b.items) }}">
     {% for o in b.items %}<li><span class="opt-num">{{ CIRCLED[loop.index0] if loop.index0 < 10 else loop.index }}</span>{{ o|option_text|inline }}</li>{% endfor %}
@@ -85,12 +86,12 @@
 </section>
 
 {% elif b.type == "fill_blank" %}
-<section class="blk q fill">
+<section class="blk q fill"{{ ed }}>
   {{ q_head(num, b.body, True, pts=ex.pts) }}
 </section>
 
 {% elif b.type == "ox" %}
-<section class="blk q ox">
+<section class="blk q ox"{{ ed }}>
   {{ q_head(num, b.title or "다음 설명이 맞으면 O, 틀리면 X에 표시하시오.", pts=ex.pts) }}
   <table class="ox-table">
     {% for it in b.items %}
@@ -100,13 +101,13 @@
 </section>
 
 {% elif b.type == "drawing" %}
-<section class="blk q drawing">
+<section class="blk q drawing"{{ ed }}>
   {{ q_head(num, b.body, pts=ex.pts) }}
   <div class="draw-box" style="height: calc(var(--line-h) * {{ b.answer_lines() }})"></div>
 </section>
 
 {% elif b.type == "diagram" %}
-<figure class="blk figure diagram" style="--w: {{ IMAGE_SIZES[b.size][1] }}%">
+<figure class="blk figure diagram"{{ ed }} style="--w: {{ IMAGE_SIZES[b.size][1] }}%">
   <div class="dg-wrap">{{ b.diagram|svg if b.diagram else "" }}{% if not b.diagram %}<div class="img-placeholder">도식 설정이 비어 있어요 — 편집 화면에서 종류와 숫자를 정하세요</div>{% endif %}</div>
   {% if b.body or b.source %}
   <figcaption><span class="fig-num">[그림 {{ num }}]</span> {{ b.body|inline }}{% if b.source %} <span class="fig-src">(출처: {{ b.source }})</span>{% endif %}</figcaption>
@@ -114,7 +115,7 @@
 </figure>
 
 {% elif b.type == "image" %}
-<figure class="blk figure" style="--w: {{ IMAGE_SIZES[b.size][1] }}%">
+<figure class="blk figure"{{ ed }} style="--w: {{ IMAGE_SIZES[b.size][1] }}%">
   {% if b.image %}
   <img src="{{ b.image }}" alt="{{ b.body }}">
   {% else %}
@@ -126,7 +127,7 @@
 </figure>
 
 {% elif b.type == "drill" %}
-<section class="blk q drill">
+<section class="blk q drill"{{ ed }}>
   {{ q_head(num, b.title or b.body or "다음 문제를 풀어 보세요.", pts=ex.pts) }}
   <ol class="drill-grid" style="--cols: {{ ex.cols }}">
     {% for it in b.items %}<li><span class="d-no">({{ loop.index }})</span><span class="d-q">{{ it|blanks }}</span></li>{% endfor %}
@@ -135,7 +136,7 @@
 </section>
 
 {% elif b.type == "cornell" %}
-<section class="blk q cornell">
+<section class="blk q cornell"{{ ed }}>
   {{ q_head(num, b.title or "핵심 내용을 정리해 보세요.", pts=ex.pts) }}
   <table class="cornell-table">
     <thead><tr><th>핵심어</th><th>정리</th></tr></thead>
@@ -148,7 +149,7 @@
 </section>
 
 {% elif b.type == "bingo" %}
-<section class="blk bingo">
+<section class="blk bingo"{{ ed }}>
   <h3 class="bingo-title">{{ (b.title or "정답 빙고")|inline }}</h3>
   <table class="bingo-grid size-{{ ex.grid|length }}">
     {% for row in ex.grid %}<tr>{% for c in row %}<td>{{ c|inline }}</td>{% endfor %}</tr>{% endfor %}
@@ -157,7 +158,7 @@
 </section>
 
 {% elif b.type == "reflection" %}
-<section class="blk reflection">
+<section class="blk reflection"{{ ed }}>
   <span class="tag">{{ b.title or "스스로 점검하기" }}</span>
   <table class="check-table">
     <thead><tr><th>점검 내용</th><th>잘함</th><th>보통</th><th>노력 필요</th></tr></thead>

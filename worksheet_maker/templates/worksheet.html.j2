@@ -222,6 +222,7 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
 })();
 </script>
 {% endif %}
+{% if editable %}{% include "edit.html.j2" %}{% endif %}
 <!-- 한장 편집 정보: 이 파일을 한장 앱의 '불러오기'에 올리면 다시 편집할 수 있습니다. -->
 <script type="application/json" id="hanjang-data">
 {{ saved_data }}

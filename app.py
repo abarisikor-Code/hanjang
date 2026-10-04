@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import re
@@ -318,21 +320,44 @@ def _store(b: dict, field: str, value) -> None:
         b[field] = value
 
 
+def _snapshot() -> None:
+    """되돌리기용: 구조를 바꾸기 바로 앞의 학습지를 기억한다 (최근 30번)."""
+    hist = ss.setdefault("ws_hist", [])
+    hist.append(copy.deepcopy(ss.ws))
+    del hist[:-30]
+
+
+def _undo() -> bool:
+    hist = ss.get("ws_hist") or []
+    if not hist:
+        return False
+    old = ss.ws
+    ss.ws = hist.pop()
+    # 되살린 칸의 입력칸이 기억된 옛 값이 아니라 되살린 값으로 다시 그려지게 한다
+    ids = {b["_id"] for b in old["blocks"] + ss.ws["blocks"]}
+    for k in [k for k in list(ss.keys()) if isinstance(k, str) and k.split("_", 1)[0] in ids]:
+        del ss[k]
+    return True
+
+
 def _move(i: int, d: int) -> None:
     blocks = ss.ws["blocks"]
     j = i + d
     if 0 <= j < len(blocks):
+        _snapshot()
         blocks[i], blocks[j] = blocks[j], blocks[i]
         ss.open_id = blocks[j]["_id"]
 
 
 def _copy(i: int) -> None:
+    _snapshot()
     b = {**ss.ws["blocks"][i], "_id": _new_id()}
     ss.ws["blocks"].insert(i + 1, b)
     ss.open_id = b["_id"]
 
 
 def _delete(i: int) -> None:
+    _snapshot()
     ss.ws["blocks"].pop(i)
 
 
@@ -488,13 +513,14 @@ def _apply_suggestion(bid: str) -> None:
     ss.pop(f"{bid}_sugg_instr", None)
     if not sugg:
         return
+    _snapshot()
     for blk in ss.ws["blocks"]:
         if blk["_id"] == bid:
             blk.clear()
             blk.update(sugg)
             blk["_id"] = bid
     # 이 구성요소의 입력칸들이 새 값으로 다시 그려지도록 기억된 입력값을 지운다.
-    for k in [k for k in list(ss.keys()) if isinstance(k, str) and k.startswith(f"{bid}_") and k != f"{bid}_exp"]:
+    for k in [k for k in list(ss.keys()) if isinstance(k, str) and k.startswith(f"{bid}_") and not k.startswith(f"{bid}_exp")]:
         del ss[k]
     ss.open_id = bid
 
@@ -565,7 +591,7 @@ def block_list() -> None:
         snip = _snippet(b)
         mark = " ✨" if f"{bid}_sugg" in ss else ""
         with st.expander(f"{i + 1}. {TYPE_LABEL[b['type']]}" + (f" · {snip}" if snip else "") + mark,
-                         expanded=(bid == ss.open_id), key=f"{bid}_exp"):
+                         expanded=(bid == ss.open_id), key=f"{bid}_exp{ss.get('exp_rev', 0)}"):
             _ai_help(b, bid)
             for field, label in FIELDS[b["type"]]:
                 key = f"{bid}_{field}"
@@ -1742,6 +1768,108 @@ def tool_reference() -> None:
 
 
 # =====================================================================
+# 학습지 위에서 바로 고치기: 미리보기 안의 도구 막대·끌어서 옮기기 (render(edit=True)의 edit.html.j2)
+# =====================================================================
+RESULT_TABS = ["✏️ 내용 고치기", "🎨 모양 바꾸기", "📝 제목·목표", "🛠 더 많은 설정"]
+PREVIEW_H = 1150
+# 미리보기 틀(iframe)을 만들고, 그 안의 편집 도구가 보낸 신호를 앱으로 넘긴다. 틀은 sandbox라 앱 화면에 손대지 못한다.
+# 학습지 HTML은 render()가 만든 것이라 모든 글이 이스케이프되어 있다.
+_PREVIEW_JS = """
+export default function (component) {
+  const { data, parentElement, setTriggerValue } = component;
+  let s = parentElement.__hj;
+  if (!s) {
+    s = parentElement.__hj = { y: 0, v: null };
+    s.frame = document.createElement("iframe");
+    s.frame.setAttribute("sandbox", "allow-scripts allow-modals allow-popups allow-downloads");
+    s.frame.setAttribute("title", "학습지 미리보기");
+    s.frame.style.cssText = "width:100%;border:0;display:block;background:#e8e8e6";
+    parentElement.appendChild(s.frame);
+  }
+  s.send = setTriggerValue;
+  if (!s.listening) {
+    s.onmsg = (e) => {
+      if (e.source !== s.frame.contentWindow || !e.data || e.data.hanjang !== "edit") return;
+      const m = e.data;
+      if (m.action === "scroll") { s.y = m.y || 0; return; }
+      if (m.action === "ready") { s.frame.contentWindow.postMessage({ hanjang: "scrollTo", y: s.y }, "*"); return; }
+      s.send("action", { action: String(m.action), i: m.i, to: m.to, after: !!m.after, t: Date.now() });
+    };
+    window.addEventListener("message", s.onmsg);
+    s.listening = true;
+  }
+  s.frame.style.height = data.height + "px";
+  if (s.v !== data.v) { s.v = data.v; s.frame.srcdoc = data.html; }
+  return () => { window.removeEventListener("message", s.onmsg); s.listening = false; };
+}
+"""
+_preview_component = st.components.v2.component("hanjang_preview", js=_PREVIEW_JS)
+_EDIT_MSG = {"up": "한 칸 위로 옮겼어요.", "down": "한 칸 아래로 옮겼어요.", "move": "옮겼어요. 번호는 저절로 다시 매겨져요.",
+             "delete": "뺐어요. ↩ 되돌리기로 살릴 수 있어요.", "edit": "왼쪽 '내용 고치기'에 그 칸을 펼쳤어요."}
+
+
+def _preview_action(a: dict) -> str:
+    """미리보기에서 온 편집 신호를 학습지에 적용한다. 값은 모두 다시 검사한다."""
+    blocks = ss.ws["blocks"]
+    n, act, i = len(blocks), a.get("action"), a.get("i")
+    if act == "undo":
+        return "되돌렸어요." if _undo() else "되돌릴 것이 없어요."
+    if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < n:
+        return ""
+    bid = blocks[i]["_id"]
+    if act in ("up", "down"):
+        j = i + (-1 if act == "up" else 1)
+        if not 0 <= j < n:
+            return ""
+        _move(i, j - i)
+    elif act == "move":
+        to = a.get("to")
+        if not isinstance(to, int) or isinstance(to, bool) or not 0 <= to < n or to == i:
+            return ""
+        _snapshot()
+        b = blocks.pop(i)
+        to = to - 1 if to > i else to
+        blocks.insert(to + (1 if a.get("after") else 0), b)
+    elif act == "delete":
+        _delete(i)
+    elif act in ("edit", "ai"):
+        ss.open_id = bid
+        ss.exp_rev = ss.get("exp_rev", 0) + 1  # 펼침 칸을 새로 만들어 이 칸만 펼쳐지게 (이미 그려진 칸은 expanded를 무시한다)
+        ss.res_tab = RESULT_TABS[0]
+        ss.scroll_to = f"{bid}_exp{ss.exp_rev}"
+        if act == "ai":
+            ss.ai_pending = bid
+            return ""
+    else:
+        return ""
+    return _EDIT_MSG.get(act, "")
+
+
+def preview_editor(ws: Worksheet) -> None:
+    if "preview_msg" in ss:
+        st.toast(ss.pop("preview_msg"))
+    if target := ss.pop("scroll_to", None):  # ✏️ 고치기: 왼쪽에 펼친 칸이 보이게
+        st.html(f"<script>setTimeout(() => document.querySelector('.st-key-{target}')"
+                "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 400);</script>", unsafe_allow_javascript=True)
+    c1, c2 = st.columns([3, 1], vertical_alignment="center")
+    c1.caption("학습지 위 칸에 마우스를 올리면 도구가 나와요 · **⋮⋮ 옮기기**를 끌어 순서를 바꿔요 · Ctrl+Z 되돌리기")
+    hist = ss.get("ws_hist") or []
+    if c2.button("↩ 되돌리기", width="stretch", key="undo_btn", help=f"되돌릴 수 있는 것 {len(hist)}개"):
+        ss.preview_msg = "되돌렸어요." if _undo() else "되돌릴 것이 없어요."
+        st.rerun()
+    html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=show_answers,
+                  form=current_form(), edit=True)
+    res = _preview_component(key="preview", data={"html": html, "v": hashlib.md5(html.encode("utf-8")).hexdigest(),
+                                                  "height": PREVIEW_H}, on_action_change=lambda: None)
+    action = getattr(res, "action", None)
+    if isinstance(action, dict):
+        msg = _preview_action(action)
+        if msg:
+            ss.preview_msg = msg
+        st.rerun()
+
+
+# =====================================================================
 # ✅ 완성: 큰 미리보기 + 저장·인쇄 + 고치기·모양 바꾸기
 # =====================================================================
 def page_result() -> None:
@@ -1777,8 +1905,13 @@ def page_result() -> None:
     a4.button("➕ 새 학습지 만들기", width="stretch", on_click=go, args=("home",))
 
     left, right = st.columns([1, 1.25], gap="large")
+    with right:
+        preview_editor(ws)  # 미리보기에서 옮기기·빼기를 하면 여기서 바꾸고 다시 그린다
+    if (bid := ss.pop("ai_pending", None)) and (b := next((x for x in ss.ws["blocks"] if x["_id"] == bid), None)):
+        with left:
+            _ask_ai(b, bid, llm.REVISE_ACTIONS["another"][1])  # 추천안이 왼쪽 그 칸에 뜬다
     with left:
-        tabs = st.tabs(["✏️ 내용 고치기", "🎨 모양 바꾸기", "📝 제목·목표", "🛠 더 많은 설정"])
+        tabs = st.tabs(RESULT_TABS, key="res_tab", on_change="rerun")
         with tabs[0]:
             block_list()
         with tabs[1]:
@@ -1803,8 +1936,6 @@ def page_result() -> None:
                 style_editor()
             with st.expander("JSON으로 직접 고치기 (익숙한 분만)"):
                 json_panel()
-    with right:
-        st.iframe(html, height=1150)  # 모든 글은 render()에서 이스케이프되어 안전하다
 
 
 # =====================================================================
