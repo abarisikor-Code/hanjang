@@ -130,8 +130,10 @@
   저장 형식을 바꿀 때는 `FORMAT_VERSION`을 올리고 예전 파일도 열리게 유지한다. (2: `form` 추가, 3: `form.doc` 한글 양식)
 - **배포**(키는 각자): `app.LOCAL`(`HANJANG_LOCAL=1`, `run.bat`·포터블·`.claude/launch.json`의 app만 준다)일 때만 서버 `.env` 키를
   읽고, '이 컴퓨터에 키 기억하기'(`_remember_key` → `.env`), 양식·모양 디스크 저장을 쓴다. 그 밖(Streamlit Cloud 인터넷판)은 키를
-  세션에만 두고(사용자가 '이 브라우저에 키 기억하기'를 켜면 브라우저 쿠키 `hanjang_key`에만 — `st.html` 스크립트로 쓰고
-  다음 접속 때 `st.context.cookies`로 읽는다. 값은 키 모양 `[A-Za-z0-9_-]{20,80}`일 때만 쓰고 읽는다. 서버 디스크에는 두지 않는다), 양식은 `.hanjang-form.json` 내려받기·파일 열기, 모양 저장은 끈다(여러 사람이 한 서버를 쓰므로). 포터블은
+  세션에만 두고(사용자가 '이 브라우저에 키 기억하기'를 켜면 브라우저 localStorage `hanjang_key`에만 — 사이드바 맨 위의
+  `st.components.v2` 컴포넌트(`_browser_key_sync`)가 저장·삭제하고 접속할 때 저장된 키를 setStateValue로 한 번 넘긴다. 값은 키 모양
+  `[A-Za-z0-9_-]{20,80}`일 때만. 쿠키 + `st.context.cookies`는 Streamlit Cloud 중간 서버 때문에 읽히지 않아 버렸다(v1.2~1.3.1).
+  서버 디스크에는 두지 않는다), 양식은 `.hanjang-form.json` 내려받기·파일 열기, 모양 저장은 끈다(여러 사람이 한 서버를 쓰므로). 포터블은
   `tools/build_portable.py`(임베디드 파이썬 + `pip --target`, `psutil` 추가) → `dist/`. 포터블 실행은
   `tools/portable_launcher.py`(→ `app/launcher.py`, pythonw로 창 없이): 서버를 8517번에 켜거나 이미 켜진 것을 쓰고, 엣지(없으면
   크롬) `--app` 창을 한장 전용 프로필(`%LOCALAPPDATA%/hanjang/window`)로 열어, 그 창이 모두 닫히면 서버를 끈다. 실행 .bat은 CP949로 쓴다. `.gitignore`는 `.env`·`forms/*.json`·직접 저장한 모양을 뺀다.
