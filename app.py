@@ -57,6 +57,18 @@ LOCAL = os.getenv("HANJANG_LOCAL") == "1"
 KEY_URL = "https://aistudio.google.com/apikey"
 
 
+def _app_version() -> str:
+    """개발노트(CHANGELOG.md)의 첫 '## vX.Y' 제목 = 가장 최근에 배포한 버전. 배포할 때 개발노트에 번호를 붙이므로 따로 고칠 것이 없다."""
+    try:
+        m = re.search(r"^## v(\d+(?:\.\d+)*)", (Path(__file__).resolve().parent / "CHANGELOG.md").read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return ""
+    return m.group(1) if m else ""
+
+
+APP_VERSION = _app_version()
+
+
 def _remember_key(key: str) -> None:
     """이 컴퓨터의 .env에 키를 적어 둔다 (LOCAL일 때만). 다음 실행부터 자동으로 채워진다."""
     lines = [ln for ln in (ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else [])
@@ -71,7 +83,7 @@ def _remember_key(key: str) -> None:
 # 인터넷판: '이 브라우저에 키 기억하기'를 켜면 키를 그 브라우저의 저장소(localStorage)에만 둔다(서버에는 저장하지 않는다).
 # 페이지 안의 작은 컴포넌트가 저장·삭제하고, 접속할 때 저장된 키를 앱에 한 번 넘긴다. (v1.2~1.3은 쿠키로 했는데 인터넷판의
 # 중간 서버를 거치면 앱이 쿠키를 읽지 못해 매번 지워졌다 — 그 쿠키는 이 컴포넌트가 지운다.) 키 모양일 때만 쓰고 받는다.
-_KEY_SHAPE = re.compile(r"[A-Za-z0-9_\-]{20,80}")
+_KEY_SHAPE = re.compile(r"[A-Za-z0-9._~+/=:\-]{20,200}")
 _KEY_STORE_JS = """
 export default function (component) {
   const { data, setStateValue, parentElement } = component;
@@ -83,7 +95,8 @@ export default function (component) {
     let result = "saved";
     try {
       if (!store) throw { name: host.__hjErr || "NoStorage" };
-      if (data.op === "save" && data.key) {
+      if (data.op === "save") {
+        if (!data.key) throw { name: "empty" };  // 넘겨받은 키가 없으면 저장했다고 하지 않는다
         store.setItem("hanjang_key", data.key);
         if (store.getItem("hanjang_key") !== data.key) result = "savefail:readback";
       }
@@ -137,11 +150,14 @@ def _browser_key_sync() -> None:
             ss.w_api_key = stored
 
 
-def _key_memory_changed() -> None:
-    ss.key_remembered = bool(ss.get("w_key_mem"))
-    ss.key_forgot = not ss.key_remembered
+def _save_browser_key() -> None:
+    """'💾 이 브라우저에 키 저장' 버튼. 저장 결과(다시 읽어 확인)는 컴포넌트가 알려 준다."""
     key = str(ss.get("w_api_key") or "").strip()
-    ss.key_op = ("save", key) if ss.key_remembered and key else ("forget", "")
+    if not _KEY_SHAPE.fullmatch(key):
+        ss.key_saved = "savefail:format"
+        return
+    ss.key_remembered, ss.key_forgot = True, False
+    ss.key_op = ("save", key)
 
 
 def _key_typed() -> None:
@@ -155,7 +171,6 @@ def _key_typed() -> None:
 def _forget_browser_key() -> None:
     ss.key_forgot = True
     ss.key_remembered = False
-    ss.w_key_mem = False
     ss.w_api_key = ""
     ss.key_op = ("forget", "")
 
@@ -166,7 +181,8 @@ def key_help() -> None:
         f"1. [{KEY_URL}]({KEY_URL}) 에 들어가 구글 계정으로 로그인합니다.\n"
         "2. 처음이면 약관 동의 창이 나옵니다. 확인하고 넘어갑니다.\n"
         "3. **Create API key**(API 키 만들기)를 누르고, 만들어진 키(AIza로 시작)를 복사합니다.\n"
-        "4. 왼쪽 **⚙️ 설정**의 'Gemini API 키' 칸에 붙여 넣습니다.\n\n"
+        "4. 왼쪽 **🔑 Gemini API 키** 칸에 붙여 넣습니다. 인터넷판은 바로 아래 **💾 이 브라우저에 키 저장**을 누르면 "
+        "다음에도 자동으로 채워져요.\n\n"
         "무료로 쓸 수 있어요. 하루에 만들 수 있는 양에 한도가 있어서, 많이 만든 날은 다음 날 다시 채워집니다.")
 
 _ICON = Path(__file__).parent / "assets" / "icon.png"  # 바탕화면·작업 표시줄·브라우저 탭에 같은 아이콘
@@ -317,46 +333,47 @@ if not LOCAL:
 # 사이드바: 처음으로 · 설정 (자주 안 쓰는 것은 접어 둔다)
 # =====================================================================
 with st.sidebar:
-    st.markdown("## 📝 한장")
+    st.markdown("## 📝 한장" + (f" :gray-badge[v{APP_VERSION}]" if APP_VERSION else ""))
     st.caption("누구나 쉽게 만드는 A4 학습지")
     st.button("🏠 처음 화면으로", width="stretch", on_click=go, args=("home",))
     if ss.ws["blocks"] and ss.page != "result":
         st.button("✏️ 만들던 학습지로", width="stretch", on_click=go, args=("result",))
     st.divider()
     env_key = os.getenv("GEMINI_API_KEY", "").strip() if LOCAL else ""  # 인터넷판은 서버 키를 절대 쓰지 않는다
-    with st.expander("⚙️ 설정", expanded=not ss.w_api_key):
-        api_key = st.text_input(
-            "Gemini API 키", type="password", key="w_api_key", on_change=_key_typed,
-            help=f"{KEY_URL} 에서 무료로 받을 수 있어요. 받는 방법은 아래 '🔑 키 받는 방법'을 보세요.",
-        ).strip()
-        if LOCAL:
-            if api_key and api_key != env_key:
-                st.button("💾 이 컴퓨터에 키 기억하기", on_click=_remember_key, args=(api_key,), width="stretch",
-                          help="다음에 열 때 키를 다시 넣지 않아도 돼요. 이 컴퓨터를 다른 사람과 같이 쓰면 누르지 마세요.")
-            elif env_key:
-                st.caption("🔑 이 컴퓨터에 기억해 둔 키를 쓰고 있어요.")
-                st.button("기억한 키 지우기", on_click=_remember_key, args=("",), width="stretch")
-        else:
-            if api_key or ss.get("key_remembered"):
-                ss.w_key_mem = bool(ss.get("key_remembered"))
-                st.checkbox("💾 이 브라우저에 키 기억하기", key="w_key_mem", on_change=_key_memory_changed,
-                            help="다음에 접속할 때 키가 자동으로 채워져요. 키는 이 컴퓨터의 이 브라우저에만 남고 서버에는 "
-                                 "저장되지 않아요. 학교 공용 컴퓨터에서는 켜지 마세요.")
-            probe, saved = ss.get("key_probe", ""), ss.get("key_saved", "")
-            if probe.startswith("blocked") or probe == "readback" or saved.startswith("savefail"):
-                st.warning("⚠️ 이 브라우저가 이 사이트에 저장하는 것을 막고 있어서 키를 기억할 수 없어요. 브라우저 설정의 "
-                           "'쿠키 및 사이트 데이터'에서 hanjang.streamlit.app을 허용하거나, 포터블판을 써 주세요. "
-                           f"(확인 결과: {md(probe if probe != 'ok' else saved)})")
-            elif ss.get("key_remembered") and saved == "saved":
-                st.caption("✅ 이 브라우저에 저장하고 다시 읽어 확인했어요.")
-            if ss.get("key_remembered"):
-                st.caption("🔑 이 브라우저에 키를 기억해 두었어요. 여러 사람이 쓰는 컴퓨터라면 지워 주세요.")
-                st.button("기억한 키 지우기", on_click=_forget_browser_key, width="stretch", key="forget_browser_key")
-            elif api_key:
-                st.caption("🔒 키는 이 브라우저 창에서만 쓰이고 서버에 저장되지 않아요. 창을 닫으면 지워져요.")
-        if not api_key:
-            with st.popover("🔑 키 받는 방법", width="stretch"):
-                key_help()
+    # 키 칸은 접지 않는다: 키를 넣으면 바로 아래에서 저장할 수 있게
+    api_key = st.text_input(
+        "🔑 Gemini API 키", type="password", key="w_api_key", on_change=_key_typed,
+        help=f"{KEY_URL} 에서 무료로 받을 수 있어요. 받는 방법은 아래 '키 받는 방법'을 보세요.",
+    ).strip()
+    if LOCAL:
+        if api_key and api_key != env_key:
+            st.button("💾 이 컴퓨터에 키 기억하기", on_click=_remember_key, args=(api_key,), width="stretch", type="primary",
+                      help="다음에 열 때 키를 다시 넣지 않아도 돼요. 이 컴퓨터를 다른 사람과 같이 쓰면 누르지 마세요.")
+        elif env_key:
+            st.caption("🔑 이 컴퓨터에 기억해 둔 키를 쓰고 있어요.")
+            st.button("기억한 키 지우기", on_click=_remember_key, args=("",), width="stretch")
+    else:
+        probe, saved = ss.get("key_probe", ""), ss.get("key_saved", "")
+        if ss.get("key_remembered"):
+            st.caption("🔑 이 브라우저에 저장해 두었어요. 다음에 열 때도 자동으로 채워져요." +
+                       (" ✅ 저장하고 다시 읽어 확인했어요." if saved == "saved" else ""))
+            st.button("저장한 키 지우기", on_click=_forget_browser_key, width="stretch", key="forget_browser_key",
+                      help="여러 사람이 쓰는 컴퓨터라면 다 쓴 뒤에 지워 주세요.")
+        elif api_key:
+            st.button("💾 이 브라우저에 키 저장", on_click=_save_browser_key, width="stretch", type="primary",
+                      key="save_browser_key",
+                      help="다음에 접속할 때 키가 자동으로 채워져요. 키는 이 컴퓨터의 이 브라우저에만 남고 서버에는 저장되지 않아요.")
+            st.caption("저장하지 않으면 새로 고침하거나 창을 닫을 때 지워져요. 학교 공용 컴퓨터에서는 저장하지 마세요.")
+        if saved in ("savefail:format", "savefail:empty"):
+            st.warning("⚠️ 키를 알아보지 못해 저장하지 못했어요. 키를 다시 복사해 붙여 넣은 뒤 저장해 주세요.")
+        elif probe.startswith("blocked") or probe == "readback" or saved.startswith("savefail"):
+            st.warning("⚠️ 이 브라우저가 이 사이트에 저장하는 것을 막고 있어서 키를 저장할 수 없어요. 브라우저 설정의 "
+                       "'쿠키 및 사이트 데이터'에서 hanjang.streamlit.app을 허용하거나, 포터블판을 써 주세요. "
+                       f"(확인 결과: {md(probe if probe != 'ok' else saved)})")
+    if not api_key:
+        with st.popover("키 받는 방법", width="stretch"):
+            key_help()
+    with st.expander("⚙️ 설정"):
         model = st.selectbox(
             "AI 모델", llm.MODELS, format_func=lambda m: llm.MODEL_LABELS.get(m, m),
             help="고른 모델이 붐비거나 오래 걸리면 다른 모델로 자동으로 바꿔 만듭니다.",
@@ -1603,7 +1620,7 @@ def page_home() -> None:
         with st.container(border=True):
             st.markdown("### 🔑 먼저 Gemini API 키를 넣어 주세요")
             st.caption("학습지는 구글 Gemini AI로 만들어요. 키는 무료로 받을 수 있고, 한 번만 하면 돼요. "
-                       "넣은 키는 왼쪽 ⚙️ 설정 칸에 들어가요.")
+                       "넣은 키는 왼쪽 🔑 Gemini API 키 칸에 들어가요.")
             key_help()
     with st.container(border=True):
         st.markdown("### 💬 말로 주문하기")
