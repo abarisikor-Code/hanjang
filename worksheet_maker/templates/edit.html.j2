@@ -1,67 +1,110 @@
 {# 앱 미리보기에서만 넣는 '학습지 위에서 바로 고치기' 도구. 인쇄·저장 파일에는 들어가지 않는다(render(edit=True)일 때만).
-   문제에 마우스를 올리면 도구 막대, ⋮⋮를 끌면 순서 바꾸기. 동작은 앱(app.preview_editor)에 postMessage로 알린다. #}
+   문제에 마우스를 올리면 도구 막대, ⋮⋮를 끌면 순서 바꾸기, 두 번 누르거나 ✏️면 그 자리에서 글 고치기,
+   답 칸 아래 손잡이를 끌면 답 줄 수 조절. 동작은 앱(app.preview_editor)에 postMessage로 알린다.
+   칸마다 고칠 글(원래 글, **굵게**·[[빈칸]] 표시 그대로)은 앱이 'fields' 메시지로 보내 준다 — 글은 textarea.value로만 넣는다. #}
 <style>
 [data-bi] { position: relative; border-radius: 2mm; outline: 1.5px dashed transparent; outline-offset: 1mm; transition: outline-color .12s; }
 [data-bi].ed-hover { outline-color: #8a8a8a; }
 [data-bi].ed-drag { opacity: .35; }
 [data-bi].ed-before { box-shadow: 0 -2.5mm 0 -1.5mm #2f6fde; }
 [data-bi].ed-after { box-shadow: 0 2.5mm 0 -1.5mm #2f6fde; }
+#ed-bar, #ed-panel, #ed-grow { font: 13px/1.4 "Noto Sans KR", "Malgun Gothic", sans-serif; color: #222; }
 #ed-bar {
   position: absolute; z-index: 50; display: none; gap: 1px; padding: 2px;
   background: #fff; border: 1px solid #bbb; border-radius: 7px; box-shadow: 0 2px 8px rgba(0,0,0,.18);
-  font: 13px/1 "Noto Sans KR", "Malgun Gothic", sans-serif;
 }
-#ed-bar button {
-  border: 0; background: none; padding: 5px 7px; border-radius: 5px; cursor: pointer; font: inherit; color: #222; white-space: nowrap;
+#ed-bar button, #ed-panel button {
+  border: 0; background: none; padding: 5px 7px; border-radius: 5px; cursor: pointer; font: inherit; color: inherit; white-space: nowrap;
 }
 #ed-bar button:hover { background: #eef3fd; }
 #ed-bar .ed-grip { cursor: grab; color: #555; }
 #ed-bar .ed-del:hover { background: #fdecec; color: #b42318; }
+#ed-grow {
+  position: absolute; z-index: 49; display: none; transform: translate(-50%, -50%); cursor: ns-resize; user-select: none;
+  background: #2f6fde; color: #fff; border-radius: 10px; padding: 2px 10px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.25);
+}
+#ed-panel {
+  position: absolute; z-index: 55; display: none; width: 440px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 10px 12px;
+  background: #fff; border: 1px solid #9db5e6; border-radius: 9px; box-shadow: 0 6px 20px rgba(0,0,0,.2);
+}
+#ed-panel label { display: block; font-size: 12px; color: #555; margin: 6px 0 2px; }
+#ed-panel textarea {
+  width: 100%; box-sizing: border-box; min-height: 34px; resize: vertical; padding: 5px 7px; border: 1px solid #ccc; border-radius: 5px;
+  font: 13px/1.5 "Noto Sans KR", "Malgun Gothic", sans-serif;
+}
+#ed-panel textarea:focus { outline: 2px solid #9db5e6; border-color: #2f6fde; }
+#ed-panel .ed-hint { font-size: 11.5px; color: #777; margin-top: 6px; }
+#ed-panel .ed-row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+#ed-panel .ed-save { background: #2f6fde; color: #fff; padding: 6px 14px; }
+#ed-panel .ed-cancel { border: 1px solid #ccc; padding: 6px 12px; }
 #ed-tip {
   position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 60; display: none;
   background: #222; color: #fff; padding: 6px 12px; border-radius: 6px; font: 13px "Noto Sans KR", sans-serif;
 }
-@media print { #ed-bar, #ed-tip { display: none !important; } [data-bi] { outline: none !important; box-shadow: none !important; } }
+@media print {
+  #ed-bar, #ed-tip, #ed-panel, #ed-grow { display: none !important; }
+  [data-bi] { outline: none !important; box-shadow: none !important; }
+}
 </style>
 <div id="ed-bar" role="toolbar" aria-label="이 칸 고치기">
   <button class="ed-grip" draggable="true" title="끌어서 순서 바꾸기">⋮⋮ 옮기기</button>
   <button data-act="up" title="한 칸 위로">▲</button>
   <button data-act="down" title="한 칸 아래로">▼</button>
-  <button data-act="edit" title="왼쪽에서 이 칸 고치기">✏️ 고치기</button>
+  <button data-act="inline" title="이 자리에서 글 고치기 (칸을 두 번 눌러도 돼요)">✏️ 고치기</button>
   <button data-act="ai" title="AI가 같은 내용으로 다른 문제를 추천">🔄 다른 문제</button>
+  <button data-act="edit" title="왼쪽에서 자세히 고치기 (정답·종류·그림 등)">⋯</button>
   <button data-act="delete" class="ed-del" title="이 칸 빼기 (되돌리기로 살릴 수 있어요)">🗑</button>
 </div>
+<div id="ed-grow" title="끌어서 답 칸 크기 바꾸기">↕ 끌어서 답 칸 조절</div>
+<div id="ed-panel" role="dialog" aria-label="글 고치기"></div>
 <div id="ed-tip"></div>
 <script>
 (function () {
   var bar = document.getElementById("ed-bar"), tip = document.getElementById("ed-tip");
-  var cur = null, dragFrom = null, mark = null;
+  var grow = document.getElementById("ed-grow"), panel = document.getElementById("ed-panel");
+  var cur = null, dragFrom = null, mark = null, fields = [], editing = null, sizing = null;
   function send(msg) { msg.hanjang = "edit"; window.parent.postMessage(msg, "*"); }
   function idx(el) { return parseInt(el.getAttribute("data-bi"), 10); }
   function blockAt(t) { return t && t.closest ? t.closest("[data-bi]") : null; }
-  function say(text) { tip.textContent = text; tip.style.display = "block"; }
+  function say(text) { tip.textContent = text; tip.style.display = text ? "block" : "none"; }
+  function busy() { return dragFrom !== null || editing !== null || sizing !== null; }
+  function pageRect(el) {
+    var r = el.getBoundingClientRect();
+    return { top: r.top + window.scrollY, bottom: r.bottom + window.scrollY, left: r.left + window.scrollX,
+             right: r.right + window.scrollX, width: r.width, height: r.height };
+  }
+
+  // ----- 답 칸 (단답형 줄·서술형 줄·그리기 상자) -----
+  function answerArea(el) { return el.querySelector(".ans-lines, .answer-box, .draw-box"); }
+  function placeGrow(el) {
+    var area = el && answerArea(el);
+    if (!area || !fields[idx(el)] || fields[idx(el)].lines == null) { grow.style.display = "none"; return; }
+    var r = pageRect(area);
+    grow.style.display = "block";
+    grow.style.left = (r.left + r.width / 2) + "px";
+    grow.style.top = r.bottom + "px";
+  }
 
   function place(el) {
-    var r = el.getBoundingClientRect();
+    var r = pageRect(el);
     bar.style.display = "flex";
-    var top = window.scrollY + r.top - bar.offsetHeight + 4;
-    bar.style.top = Math.max(window.scrollY + 2, top) + "px";
-    bar.style.left = Math.max(4, window.scrollX + r.right - bar.offsetWidth) + "px";
+    bar.style.top = Math.max(window.scrollY + 2, r.top - bar.offsetHeight + 4) + "px";
+    bar.style.left = Math.max(4, r.right - bar.offsetWidth) + "px";
+    placeGrow(el);
   }
   function hover(el) {
     if (cur === el) return;
     if (cur) cur.classList.remove("ed-hover");
     cur = el;
-    if (el) { el.classList.add("ed-hover"); place(el); } else { bar.style.display = "none"; }
+    if (el) { el.classList.add("ed-hover"); place(el); } else { bar.style.display = "none"; grow.style.display = "none"; }
   }
   document.addEventListener("mousemove", function (e) {
-    if (dragFrom !== null) return;
-    if (bar.contains(e.target)) return;
+    if (busy() || bar.contains(e.target) || grow.contains(e.target)) return;
     hover(blockAt(e.target));
   });
-  document.addEventListener("mouseleave", function () { if (dragFrom === null) hover(null); });
+  document.addEventListener("mouseleave", function () { if (!busy()) hover(null); });
   window.addEventListener("scroll", function () {
-    if (cur) place(cur);
+    if (cur && !editing) place(cur);
     clearTimeout(window.__edScroll);
     window.__edScroll = setTimeout(function () { send({ action: "scroll", y: Math.round(window.scrollY) }); }, 150);
   });
@@ -70,16 +113,111 @@
     var b = e.target.closest("button[data-act]");
     if (!b || !cur) return;
     var act = b.getAttribute("data-act");
+    if (act === "inline") { openPanel(cur); return; }
     send({ action: act, i: idx(cur) });
     say({ up: "한 칸 위로 옮기는 중…", down: "한 칸 아래로 옮기는 중…", edit: "왼쪽에 이 칸을 펼쳤어요",
           ai: "AI가 다른 문제를 만드는 중… 왼쪽에 추천안이 떠요", "delete": "빼는 중… 되돌리기로 살릴 수 있어요" }[act] || "");
   });
 
-  // 끌어서 순서 바꾸기: 도구 막대의 '⋮⋮ 옮기기'를 잡고 다른 칸 위·아래에 놓는다
+  // ----- 그 자리에서 글 고치기 -----
+  function openPanel(el) {
+    var i = idx(el), f = fields[i];
+    if (!f || !f.fields.length) { say("이 칸은 왼쪽 '내용 고치기'에서 고쳐 주세요"); return; }
+    editing = i;
+    bar.style.display = "none"; grow.style.display = "none";
+    panel.innerHTML = "";
+    f.fields.forEach(function (fd) {
+      var lab = document.createElement("label");
+      lab.textContent = fd.label;
+      var ta = document.createElement("textarea");
+      ta.name = fd.name;
+      ta.value = fd.value;  // 글은 value로만 넣는다 (HTML로 해석하지 않는다)
+      ta.rows = Math.min(8, Math.max(fd.multi ? 3 : 1, fd.value.split("\n").length));
+      panel.appendChild(lab); panel.appendChild(ta);
+    });
+    var hint = document.createElement("div");
+    hint.className = "ed-hint";
+    hint.textContent = "**굵게**, [[빈칸]] 표시를 그대로 쓸 수 있어요 · Ctrl+Enter 저장 · Esc 닫기";
+    var row = document.createElement("div");
+    row.className = "ed-row";
+    var cancel = document.createElement("button"); cancel.className = "ed-cancel"; cancel.textContent = "닫기";
+    var save = document.createElement("button"); save.className = "ed-save"; save.textContent = "고치기";
+    row.appendChild(cancel); row.appendChild(save);
+    panel.appendChild(hint); panel.appendChild(row);
+    var r = pageRect(el);
+    panel.style.display = "block";
+    panel.style.top = (r.top + 6) + "px";
+    panel.style.left = Math.max(8, Math.min(r.left, window.scrollX + document.documentElement.clientWidth - panel.offsetWidth - 8)) + "px";
+    cancel.onclick = closePanel;
+    save.onclick = savePanel;
+    var first = panel.querySelector("textarea");
+    first.focus();
+    first.setSelectionRange(first.value.length, first.value.length);
+  }
+  function closePanel() { panel.style.display = "none"; editing = null; say(""); }
+  function savePanel() {
+    if (editing === null) return;
+    var values = {}, changed = false, f = fields[editing];
+    panel.querySelectorAll("textarea").forEach(function (ta) {
+      values[ta.name] = ta.value;
+      var old = f.fields.filter(function (x) { return x.name === ta.name; })[0];
+      if (old && old.value !== ta.value) changed = true;
+    });
+    var i = editing;
+    closePanel();
+    if (changed) { send({ action: "text", i: i, values: values }); say("고치는 중…"); }
+  }
+  panel.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { e.preventDefault(); closePanel(); }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); savePanel(); }
+    e.stopPropagation();  // 고치는 동안 Ctrl+Z는 글 되돌리기로
+  });
+  document.addEventListener("dblclick", function (e) {
+    if (busy() || panel.contains(e.target)) return;
+    var el = blockAt(e.target);
+    if (el) { e.preventDefault(); openPanel(el); }
+  });
+  document.addEventListener("mousedown", function (e) {  // 바깥을 누르면 고친 것을 저장하고 닫는다
+    if (editing !== null && !panel.contains(e.target)) savePanel();
+  });
+
+  // ----- 답 칸 크기: 손잡이를 위아래로 끌면 줄 수가 바뀐다 -----
+  grow.addEventListener("mousedown", function (e) {
+    if (!cur) return;
+    e.preventDefault();
+    var area = answerArea(cur), i = idx(cur), n0 = fields[i].lines;
+    var unit = area.classList.contains("draw-box") ? area.getBoundingClientRect().height / Math.max(1, n0)
+      : (area.querySelector(".line") || area).getBoundingClientRect().height;
+    sizing = { i: i, n: n0, n0: n0, y0: e.clientY, unit: Math.max(8, unit), area: area };
+    bar.style.display = "none";
+    say("답 칸 " + n0 + "줄");
+  });
+  function drawLines(area, n) {
+    if (area.classList.contains("draw-box")) { area.style.height = (sizing.unit * n) + "px"; return; }
+    var lines = area.querySelectorAll(".line");
+    for (var k = lines.length; k < n; k++) { var d = document.createElement("div"); d.className = "line"; area.appendChild(d); }
+    for (var k2 = lines.length - 1; k2 >= n; k2--) lines[k2].remove();
+  }
+  document.addEventListener("mousemove", function (e) {
+    if (!sizing) return;
+    var n = Math.max(1, Math.min(20, sizing.n0 + Math.round((e.clientY - sizing.y0) / sizing.unit)));
+    if (n !== sizing.n) { sizing.n = n; drawLines(sizing.area, n); say("답 칸 " + n + "줄"); }
+    var r = pageRect(sizing.area);
+    grow.style.top = r.bottom + "px";
+  });
+  document.addEventListener("mouseup", function () {
+    if (!sizing) return;
+    var s = sizing;
+    sizing = null;
+    if (s.n !== s.n0) { send({ action: "lines", i: s.i, n: s.n }); say("답 칸을 " + s.n + "줄로 바꾸는 중…"); } else { say(""); }
+  });
+
+  // ----- 끌어서 순서 바꾸기: 도구 막대의 '⋮⋮ 옮기기'를 잡고 다른 칸 위·아래에 놓는다 -----
   bar.querySelector(".ed-grip").addEventListener("dragstart", function (e) {
     if (!cur) { e.preventDefault(); return; }
     dragFrom = idx(cur);
     cur.classList.add("ed-drag");
+    grow.style.display = "none";
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", String(dragFrom));
     try { e.dataTransfer.setDragImage(cur, 20, 20); } catch (err) {}
@@ -112,9 +250,10 @@
   document.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) { e.preventDefault(); send({ action: "undo" }); say("되돌리는 중…"); }
   });
-  window.addEventListener("message", function (e) {  // 앱이 새로 그린 뒤 보던 자리로
-    if (e.source !== window.parent || !e.data || e.data.hanjang !== "scrollTo") return;
-    window.scrollTo(0, e.data.y || 0);
+  window.addEventListener("message", function (e) {  // 앱에서: 보던 자리로 / 칸마다 고칠 글
+    if (e.source !== window.parent || !e.data) return;
+    if (e.data.hanjang === "scrollTo") window.scrollTo(0, e.data.y || 0);
+    if (e.data.hanjang === "fields" && Array.isArray(e.data.fields)) fields = e.data.fields;
   });
   send({ action: "ready" });
 })();

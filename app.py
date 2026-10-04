@@ -1792,20 +1792,52 @@ export default function (component) {
       if (e.source !== s.frame.contentWindow || !e.data || e.data.hanjang !== "edit") return;
       const m = e.data;
       if (m.action === "scroll") { s.y = m.y || 0; return; }
-      if (m.action === "ready") { s.frame.contentWindow.postMessage({ hanjang: "scrollTo", y: s.y }, "*"); return; }
-      s.send("action", { action: String(m.action), i: m.i, to: m.to, after: !!m.after, t: Date.now() });
+      if (m.action === "ready") {
+        s.frame.contentWindow.postMessage({ hanjang: "fields", fields: s.fields }, "*");
+        s.frame.contentWindow.postMessage({ hanjang: "scrollTo", y: s.y }, "*");
+        return;
+      }
+      s.send("action", { action: String(m.action), i: m.i, to: m.to, after: !!m.after, n: m.n,
+                         values: m.values, t: Date.now() });
     };
     window.addEventListener("message", s.onmsg);
     s.listening = true;
   }
+  s.fields = data.fields;
   s.frame.style.height = data.height + "px";
   if (s.v !== data.v) { s.v = data.v; s.frame.srcdoc = data.html; }
   return () => { window.removeEventListener("message", s.onmsg); s.listening = false; };
 }
 """
 _preview_component = st.components.v2.component("hanjang_preview", js=_PREVIEW_JS)
-_EDIT_MSG = {"up": "한 칸 위로 옮겼어요.", "down": "한 칸 아래로 옮겼어요.", "move": "옮겼어요. 번호는 저절로 다시 매겨져요.",
+_EDIT_MSG = {"text": "고쳤어요. ↩ 되돌리기로 되돌릴 수 있어요.", "lines": "답 칸 크기를 바꿨어요.",
+             "up": "한 칸 위로 옮겼어요.", "down": "한 칸 아래로 옮겼어요.", "move": "옮겼어요. 번호는 저절로 다시 매겨져요.",
              "delete": "뺐어요. ↩ 되돌리기로 살릴 수 있어요.", "edit": "왼쪽 '내용 고치기'에 그 칸을 펼쳤어요."}
+
+
+_INLINE_SKIP = {"diagram", "image", "size", "lines"}
+_MULTI = {"body", "items", "rows", "solution"}
+_LINE_TYPES = {"short_answer", "essay", "drawing"}
+
+
+def _inline_fields(b: dict) -> list[tuple[str, str]]:
+    return [(f, label) for f, label in FIELDS.get(b["type"], []) if f not in _INLINE_SKIP]
+
+
+def _edit_data(ws: Worksheet) -> list[dict]:
+    """미리보기 틀에 보낼 칸마다의 고칠 글(원래 표시 그대로)과 답 줄 수."""
+    out = []
+    for raw, b in zip(ss.ws["blocks"], ws.blocks):
+        out.append({"fields": [{"name": f, "label": label, "value": _text_value(raw, f), "multi": f in _MULTI}
+                               for f, label in _inline_fields(raw)],
+                    "lines": b.answer_lines() if b.type in _LINE_TYPES else None})
+    return out
+
+
+def _forget_widgets(bid: str) -> None:
+    """그 칸의 왼쪽 입력칸이 기억한 옛 값을 지운다 (새 값으로 다시 그려지게)."""
+    for k in [k for k in list(ss.keys()) if isinstance(k, str) and k.startswith(f"{bid}_") and not k.startswith(f"{bid}_exp")]:
+        del ss[k]
 
 
 def _preview_action(a: dict) -> str:
@@ -1832,6 +1864,26 @@ def _preview_action(a: dict) -> str:
         blocks.insert(to + (1 if a.get("after") else 0), b)
     elif act == "delete":
         _delete(i)
+    elif act == "text":
+        values = a.get("values")
+        allowed = {f for f, _ in _inline_fields(blocks[i])}
+        if not isinstance(values, dict):
+            return ""
+        changes = {f: v for f, v in values.items()
+                   if f in allowed and isinstance(v, str) and len(v) <= 20000 and v != _text_value(blocks[i], f)}
+        if not changes:
+            return ""
+        _snapshot()
+        for f, v in changes.items():
+            _store(blocks[i], f, v)
+        _forget_widgets(bid)
+    elif act == "lines":
+        n = a.get("n")
+        if blocks[i]["type"] not in _LINE_TYPES or not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 20:
+            return ""
+        _snapshot()
+        blocks[i]["lines"] = n
+        _forget_widgets(bid)
     elif act in ("edit", "ai"):
         ss.open_id = bid
         ss.exp_rev = ss.get("exp_rev", 0) + 1  # 펼침 칸을 새로 만들어 이 칸만 펼쳐지게 (이미 그려진 칸은 expanded를 무시한다)
@@ -1852,15 +1904,18 @@ def preview_editor(ws: Worksheet) -> None:
         st.html(f"<script>setTimeout(() => document.querySelector('.st-key-{target}')"
                 "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 400);</script>", unsafe_allow_javascript=True)
     c1, c2 = st.columns([3, 1], vertical_alignment="center")
-    c1.caption("학습지 위 칸에 마우스를 올리면 도구가 나와요 · **⋮⋮ 옮기기**를 끌어 순서를 바꿔요 · Ctrl+Z 되돌리기")
+    c1.caption("학습지 위 칸에 마우스를 올리면 도구가 나와요 · **두 번 누르면** 그 자리에서 고쳐요 · **⋮⋮ 옮기기**로 순서를, "
+               "답 칸 아래 **↕** 를 끌어 크기를 바꿔요 · Ctrl+Z 되돌리기")
     hist = ss.get("ws_hist") or []
     if c2.button("↩ 되돌리기", width="stretch", key="undo_btn", help=f"되돌릴 수 있는 것 {len(hist)}개"):
         ss.preview_msg = "되돌렸어요." if _undo() else "되돌릴 것이 없어요."
         st.rerun()
     html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=show_answers,
                   form=current_form(), edit=True)
-    res = _preview_component(key="preview", data={"html": html, "v": hashlib.md5(html.encode("utf-8")).hexdigest(),
-                                                  "height": PREVIEW_H}, on_action_change=lambda: None)
+    fields = _edit_data(ws)
+    version = hashlib.md5((html + json.dumps(fields, ensure_ascii=False)).encode("utf-8")).hexdigest()
+    res = _preview_component(key="preview", data={"html": html, "v": version, "height": PREVIEW_H, "fields": fields},
+                             on_action_change=lambda: None)
     action = getattr(res, "action", None)
     if isinstance(action, dict):
         msg = _preview_action(action)

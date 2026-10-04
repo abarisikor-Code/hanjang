@@ -133,7 +133,10 @@
   - **학습지 위에서 바로 고치기**: `render(edit=True)`가 블록마다 `data-bi`(blocks.html.j2의 `{{ ed }}`)를 달고
     `templates/edit.html.j2`(도구 막대·끌어서 옮기기·Ctrl+Z, 인쇄 때 숨김)를 넣는다 — 저장·인쇄용 HTML에는 넣지 않는다.
     미리보기는 `st.components.v2` 컴포넌트(`_PREVIEW_JS`)가 sandbox iframe으로 그리고, 틀 안의 postMessage를 `setTriggerValue('action')`로
-    앱에 넘긴다. `_preview_action`이 값을 다시 검사해 적용(옮기기·빼기·✏️는 그 칸 펼치기·🔄는 `ss.ai_pending` → `_ask_ai` 추천안).
+    앱에 넘긴다. `_preview_action`이 값을 다시 검사해 적용(옮기기·빼기·⋯는 그 칸 펼치기·🔄는 `ss.ai_pending` → `_ask_ai` 추천안,
+    `text`는 그 자리 고치기 창의 글 — 그 칸 종류의 `FIELDS` 글 칸만(`_inline_fields`), `lines`는 답 칸 손잡이 — 1~20줄).
+    칸마다 고칠 원래 글·답 줄 수는 `_edit_data`가 컴포넌트 data로 넘기고, 틀이 'ready'를 보내면 postMessage('fields')로 넣는다
+    (틀 안에서는 textarea.value로만 쓴다). 틀을 다시 그릴지는 HTML + fields의 md5로 정한다.
     구조를 바꾸는 편집(`_move`·`_copy`·`_delete`·`_apply_suggestion`·끌기)은 `_snapshot()`으로 `ss.ws_hist`(30개)에 앞 상태를 두고
     `_undo()`가 되살리며 그 칸들의 입력칸 키를 지운다. 펼침 칸 키는 `{bid}_exp{exp_rev}` — 이미 그려진 expander는 expanded 값을
     무시하므로 ✏️ 때 `exp_rev`를 올려 새로 만든다. 실제 앱 시험은 헤드리스 엣지 + DevTools(틀은 OOPIF라 Target.setAutoAttach). 화면이 바뀌면 `st.html(..., unsafe_allow_javascript=True)`로 맨 위로 스크롤한다.
