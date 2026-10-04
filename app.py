@@ -25,6 +25,25 @@ from uuid import uuid4
 import streamlit as st
 from dotenv import load_dotenv
 
+
+def _fresh_worksheet_modules() -> None:
+    """새 버전을 받으면(인터넷판은 GitHub에서 파일만 바뀐다) Streamlit은 app.py만 다시 읽고 이미 불러온 worksheet_maker 모듈은
+    그대로 쓴다 → 옛 모듈과 새 app.py가 섞여 ImportError가 난다(v1.3 배포 때). 파일이 바뀌었으면 모듈을 버리고 새로 불러오게 한다."""
+    import sys
+
+    pkg = Path(__file__).resolve().parent / "worksheet_maker"
+    stamp = max(f.stat().st_mtime for f in pkg.rglob("*.py"))
+    loaded = sys.modules.get("worksheet_maker")
+    if loaded is not None and getattr(loaded, "_hanjang_stamp", None) != stamp:
+        for name in [n for n in sys.modules if n == "worksheet_maker" or n.startswith("worksheet_maker.")]:
+            del sys.modules[name]
+    import worksheet_maker
+
+    worksheet_maker._hanjang_stamp = stamp
+
+
+_fresh_worksheet_modules()
+
 from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx, images, kinds, llm, verify
 from worksheet_maker.render import LEVELS, PER_PAGE, grade_level, level_key, render
 from worksheet_maker.saved import LoadError, unpack
