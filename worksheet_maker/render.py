@@ -18,13 +18,23 @@ from .theme import Theme, body_classes, css_vars
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
-# 대상 학교급별 조판 값: 본문 크기(pt), 줄 간격, 답 줄 높이(mm)
+# 대상 학년별 조판 값: 본문 크기(pt), 줄 간격, 답 줄 높이(mm). 한장은 초등학교용이다.
 LEVELS: dict[str, dict] = {
-    "lower": {"label": "초등 저학년(1~2)", "base": 13, "lh": 1.85, "line_h": 11},
-    "elementary": {"label": "초등학교", "base": 12, "lh": 1.8, "line_h": 10},
-    "middle": {"label": "중학교", "base": 11, "lh": 1.7, "line_h": 9},
-    "high": {"label": "고등학교", "base": 10.5, "lh": 1.65, "line_h": 8.5},
+    "lower": {"label": "초등 1~2학년", "base": 13, "lh": 1.85, "line_h": 11},
+    "elementary": {"label": "초등 3~4학년", "base": 12, "lh": 1.8, "line_h": 10},
+    "upper": {"label": "초등 5~6학년", "base": 11.5, "lh": 1.75, "line_h": 9.5},
 }
+# 예전에 저장한 파일의 학교급 (초등 3~6학년 = elementary, 중·고등학교 = 5~6학년 모양으로)
+_LEVEL_ALIASES = {"middle": "upper", "high": "upper"}
+
+
+def level_key(level: str | None) -> str:
+    level = _LEVEL_ALIASES.get(level or "", level or "")
+    return level if level in LEVELS else "elementary"
+
+
+def grade_level(grade: int) -> str:
+    return "lower" if grade <= 2 else "elementary" if grade <= 4 else "upper"
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -129,13 +139,13 @@ def _env() -> Environment:
 
 
 def render(
-    ws: Worksheet, level: str = "middle", footer: str = "", theme: Theme | None = None, show_answers: bool = False,
+    ws: Worksheet, level: str = "elementary", footer: str = "", theme: Theme | None = None, show_answers: bool = False,
     show_print_button: bool = True,
     thumbnail: bool = False,  # 학습지 모양 고르기용 작은 미리보기 (좁은 종이)
     form: Form | None = None,  # 내 학습지 양식: 이 양식 쪽 그림 위의 칸에 내용을 담는다
     edit: bool = False,  # 앱 미리보기 전용: 학습지 위에서 바로 고치는 도구(끌어서 옮기기·도구 막대)를 넣는다
 ) -> str:
-    lv = dict(LEVELS.get(level, LEVELS["middle"]))
+    lv = dict(LEVELS[level_key(level)])
     theme = theme or Theme()
     if theme.size == "large":  # 글자 크기 '크게': 본문과 답 칸을 함께 키운다
         lv["base"] = round(lv["base"] * 1.15, 1)
@@ -242,7 +252,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="학습지 JSON을 A4 HTML로 만듭니다 (AI 없이 조판만).")
     p.add_argument("json_file")
     p.add_argument("-o", "--out", help="저장할 HTML 경로 (기본: JSON과 같은 이름)")
-    p.add_argument("--level", choices=list(LEVELS), default="middle")
+    p.add_argument("--level", choices=list(LEVELS), default="elementary")
     p.add_argument("--footer", default="")
     p.add_argument("--theme", help="스타일 JSON 경로 (예: themes/교과서형.json)")
     args = p.parse_args()

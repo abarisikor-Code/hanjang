@@ -24,10 +24,9 @@ from uuid import uuid4
 
 import streamlit as st
 from dotenv import load_dotenv
-from pydantic import ValidationError
 
-from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx, images, kinds, llm
-from worksheet_maker.render import LEVELS, render
+from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx, images, kinds, llm, verify
+from worksheet_maker.render import LEVELS, grade_level, level_key, render
 from worksheet_maker.saved import LoadError, unpack
 from worksheet_maker.schema import BLOCK_TYPES, IMAGE_SIZES, QUESTION_TYPES, Block, Worksheet
 from worksheet_maker.theme import THEME_OPTIONS, Theme, list_themes, save_theme
@@ -144,7 +143,7 @@ FIELDS: dict[str, list[tuple[str, str]]] = {
     "bingo": [("title", "제목 (비우면 '정답 빙고')"), ("items", "헷갈리는 오답 (한 줄에 하나) — 정답은 문항에서 자동으로 들어가요")],
 }
 TYPE_LABEL = {k: v[0] for k, v in BLOCK_TYPES.items()}
-LEVEL_CHOICES = {"lower": "초등 1~2학년", "elementary": "초등 3~6학년", "middle": "중학교", "high": "고등학교"}
+LEVEL_CHOICES = {k: v["label"] for k, v in LEVELS.items()}  # 초등 1~2 / 3~4 / 5~6학년
 
 
 # ----- 상태 -----
@@ -190,7 +189,8 @@ if "ws" not in ss:
     ss.rev = ss.theme_rev = 0
     ss.open_id = None
     # 화면을 옮겨 다녀도 사라지지 않게, 위젯과 따로 기억하는 값들
-    ss.doc_level = "elementary"  # 글자 크기·답 칸을 정하는 학교급
+    ss.doc_level = "elementary"  # 글자 크기·답 칸을 정하는 학년 (초등 1~2 / 3~4 / 5~6)
+    ss.auto_answer = True  # 문제를 직접 고치면 정답·해설도 AI가 다시 맞춘다
     ss.footer_text = ""
     ss.answers_on = True
     ss.wkind = "standard"  # 학습지 유형 (kinds.KINDS): 3단계에서 고르고 다음 학습지에도 이어 쓴다
@@ -287,7 +287,7 @@ with st.sidebar:
         )
     st.caption("도움말: 막히면 🏠 처음 화면으로 돌아가 다시 시작해도 만들던 학습지는 남아 있어요.")
 
-level = ss.doc_level
+level = ss.doc_level = level_key(ss.doc_level)  # 예전 값(중·고등학교)은 5~6학년으로
 show_answers = ss.answers_on
 footer = ss.footer_text
 
@@ -451,7 +451,7 @@ def _load_sample() -> None:
 
 
 def _open_saved(widget_key: str) -> None:
-    """저장한 HTML(또는 예전 JSON)을 올리면 내용·모양·학교급·꼬리말을 그대로 되살린다."""
+    """저장한 HTML(또는 예전 JSON)을 올리면 내용·모양·학년·꼬리말을 그대로 되살린다."""
     f = ss.get(widget_key)
     if f is None:
         return
@@ -463,8 +463,8 @@ def _open_saved(widget_key: str) -> None:
     set_worksheet(saved.worksheet)
     if saved.theme:
         set_theme(saved.theme)
-    if saved.level in LEVELS:
-        ss.doc_level = saved.level
+    if saved.level:
+        ss.doc_level = level_key(saved.level)
     if saved.footer is not None:
         ss.footer_text = saved.footer
     if saved.show_answers is not None:
@@ -543,6 +543,55 @@ def _ask_ai(b: dict, bid: str, instruction: str) -> None:
     st.rerun()
 
 
+_CONTENT_FIELDS = {"body", "items"}  # 이 칸을 고치면 정답·해설이 달라질 수 있다
+_ANSWER_TYPES = {"short_answer", "essay", "multiple_choice", "fill_blank", "ox", "drawing"}  # 정답·해설 칸이 있는 문항
+_ANSWER_ONLY = ("선생님이 이 문항의 문제 글·선택지를 직접 고쳤다. 문제 글·선택지·진술문은 한 글자도 바꾸지 말고 그대로 두고, "
+                "고친 문제에 맞는 정답(answer)과 해설(solution)만 새로 정확히 쓴다. 계산은 반드시 다시 확인한다. "
+                "선택형 정답은 '③ 눈이 내린다'처럼 번호와 선택지를, O/X는 '(1) O (2) X'처럼 쓴다.")
+
+
+def _content_changed(bid: str) -> None:
+    """문제 글·선택지를 손으로 고치면: 그 칸을 펼쳐 두고, 켜져 있으면 정답·해설 다시 맞추기를 예약한다(값이 저장된 뒤에 한다)."""
+    ss.open_id = bid
+    if ss.get("auto_answer", True):
+        pending = ss.setdefault("answer_pending", [])
+        if bid not in pending:
+            pending.append(bid)
+
+
+def _refresh_answers(bids: list[str]) -> None:
+    """고친 문항의 정답·해설만 AI가 다시 쓰고(문제 글은 그대로), 계산 문제는 프로그램이 한 번 더 검산한다."""
+    blocks = {b["_id"]: b for b in ss.ws["blocks"]}
+    todo = [blocks[b] for b in bids if b in blocks and blocks[b]["type"] in _ANSWER_TYPES]
+    if not todo:
+        return
+    if not api_key:
+        ss.preview_msg = "API 키가 없어 정답·해설을 다시 맞추지 못했어요. 왼쪽 ⚙️ 설정에 키를 넣어 주세요."
+        return
+    grade = ss.grade if ss.get("last_req") else {"lower": 2, "elementary": 4, "upper": 6}[level]
+    done, notes = 0, []
+    with ai_status("고친 문제에 맞게 정답·해설을 다시 맞추는 중"):
+        for b in todo:
+            try:
+                new = llm.revise_block(api_key=api_key, block=b, instruction=_ANSWER_ONLY, context=_context(), model=model)
+            except llm.AnalyzeError as e:
+                notes.append(f"{TYPE_LABEL[b['type']]}: 정답·해설을 다시 맞추지 못했어요 ({str(e).splitlines()[0]})")
+                continue
+            if b["type"] != "fill_blank":  # 빈칸 채우기 정답은 본문의 [[정답]]에서 바로 나온다
+                b["answer"] = new.answer
+            b["solution"] = new.solution
+            one = Worksheet(blocks=[Block.model_validate({k: v for k, v in b.items() if k != "_id"})])
+            fixes = verify.check(one, reduce=grade >= 5)  # 계산 문제는 정답을 프로그램이 다시 계산
+            if fixes:
+                fixed = one.blocks[0]
+                b["body"], b["items"], b["answer"] = fixed.body, fixed.items, fixed.answer
+                notes += fixes
+            _forget_widgets(b["_id"])
+            done += 1
+    msg = f"고친 문제에 맞게 정답·해설을 다시 맞췄어요 ({done}개)." if done else ""
+    ss.preview_msg = " ".join([msg] + notes).strip()
+
+
 def _ai_help(b: dict, bid: str) -> None:
     """구성요소마다 '✨ AI 도움': 바로 바꾸지 않고 추천안을 먼저 보여 준 뒤 적용을 고르게 한다."""
     if b["type"] == "image":
@@ -582,7 +631,8 @@ def _ai_help(b: dict, bid: str) -> None:
 def block_list() -> None:
     """내용 고치기: 구성요소 목록. 누르면 펼쳐져서 고치고, ✨ AI 도움으로 쉽게 바꾼다."""
     ws = ss.ws
-    st.caption("고칠 칸을 누르세요. 글을 바꾸면 오른쪽 학습지에 바로 반영돼요. 어려우면 **✨ AI 도움**을 눌러 보세요.")
+    st.caption("고칠 칸을 누르세요. 글을 바꾸면 오른쪽 학습지에 바로 반영돼요. 어려우면 **✨ AI 도움**을 눌러 보세요."
+               + (" 문제 글·선택지를 고치면 **정답·해설도 AI가 다시 맞춰요**." if ss.get("auto_answer", True) else ""))
     if not ws["blocks"]:
         st.info("아직 내용이 없어요. 아래에서 넣을 것을 골라 ＋ 추가를 누르거나, '📝 제목·목표' 탭에서 **✨ AI로 내용 채우기**를 해 보세요.")
 
@@ -620,7 +670,9 @@ def block_list() -> None:
                     )
                 elif field in ("body", "items", "rows"):
                     height = 150 if field == "body" and b["type"] in ("reading", "text") else 100
-                    _store(b, field, st.text_area(label, value=_text_value(b, field), key=key, height=height, on_change=_focus, args=(bid,)))
+                    changed = _content_changed if field in _CONTENT_FIELDS and b["type"] in _ANSWER_TYPES else _focus
+                    _store(b, field, st.text_area(label, value=_text_value(b, field), key=key, height=height,
+                                                  on_change=changed, args=(bid,)))
                 else:
                     _store(b, field, st.text_input(label, value=_text_value(b, field), key=key, on_change=_focus, args=(bid,)))
             with st.expander("종류 바꾸기", expanded=False):
@@ -1189,32 +1241,6 @@ def style_editor() -> None:
             st.success(f"'{t['name']}' 모양을 저장했어요. 다음부터 모양 고르기에 나와요.")
 
 
-def json_panel() -> None:
-    st.caption("학습지 구조를 직접 고치거나, 저장해 둔 JSON을 붙여넣고 '적용'을 누르세요. (익숙한 분만)")
-    # 그림 데이터는 매우 길어서 '@그림1' 같은 표시로 바꿔 보여주고, 적용할 때 되돌린다.
-    data = current_worksheet().model_dump()
-    pictures: list[str] = []
-    for b in data["blocks"]:
-        if b.get("image"):
-            pictures.append(b["image"])
-            b["image"] = f"@그림{len(pictures)}"
-    current = json.dumps(data, ensure_ascii=False, indent=2)
-    edited = st.text_area("학습지 구조 (JSON)", value=current, height=420, key=f"json_{hash(current)}")
-    if st.button("적용", type="primary"):
-        try:
-            obj = json.loads(edited)
-            for b in obj.get("blocks", []) if isinstance(obj, dict) else []:
-                m = re.fullmatch(r"@그림(\d+)", str(b.get("image", "")))
-                if m and 0 < int(m.group(1)) <= len(pictures):
-                    b["image"] = pictures[int(m.group(1)) - 1]
-            set_worksheet(Worksheet.model_validate(obj))
-            st.rerun()
-        except json.JSONDecodeError as e:
-            st.error(f"JSON 형식 오류: {e.lineno}번째 줄 {e.colno}번째 글자 근처를 확인하세요. ({e.msg})")
-        except ValidationError as e:
-            st.error(f"구조 오류:\n{e}")
-
-
 # =====================================================================
 # 배울 내용 고르기 (영역을 바꿔도 고른 것이 남는다: ss.sel["<prefix>|<과목>"] = 코드 목록)
 # =====================================================================
@@ -1391,7 +1417,7 @@ def _run(req: dict) -> None:
             fixes.append(f"AI 검토를 마치지 못했어요 — 문제와 정답을 한 번 더 확인해 주세요. ({str(e).splitlines()[0]})")
     set_worksheet(ws)
     ss.review_notes = (bool(req.get("review", True)), fixes)
-    ss.doc_level = "lower" if req["grade"] <= 2 else "elementary"
+    ss.doc_level = grade_level(req["grade"])
     ss.last_req = req
     ss.pop("nl_msg", None)
     ss.open_id = None
@@ -1877,6 +1903,8 @@ def _preview_action(a: dict) -> str:
         for f, v in changes.items():
             _store(blocks[i], f, v)
         _forget_widgets(bid)
+        if changes.keys() & _CONTENT_FIELDS and blocks[i]["type"] in _ANSWER_TYPES:
+            _content_changed(bid)
     elif act == "lines":
         n = a.get("n")
         if blocks[i]["type"] not in _LINE_TYPES or not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 20:
@@ -1965,7 +1993,8 @@ def page_result() -> None:
     if (bid := ss.pop("ai_pending", None)) and (b := next((x for x in ss.ws["blocks"] if x["_id"] == bid), None)):
         with left:
             _ask_ai(b, bid, llm.REVISE_ACTIONS["another"][1])  # 추천안이 왼쪽 그 칸에 뜬다
-    with left:
+    left_panel = left.container()
+    with left_panel:
         tabs = st.tabs(RESULT_TABS, key="res_tab", on_change="rerun")
         with tabs[0]:
             block_list()
@@ -1985,12 +2014,18 @@ def page_result() -> None:
             header_panel()
         with tabs[3]:
             st.toggle("정답·해설 쪽 넣기", value=ss.answers_on, key="w_answers", on_change=_sync, args=("answers_on", "w_answers"))
-            st.segmented_control("글자 크기·답 칸 (학교급)", list(LEVEL_CHOICES), default=ss.doc_level, key="w_level_r",
+            st.toggle("✍️ 문제를 직접 고치면 정답·해설도 AI가 바로 다시 맞추기", value=ss.get("auto_answer", True),
+                      key="w_auto_answer", on_change=_sync, args=("auto_answer", "w_auto_answer"),
+                      help="문제 글이나 선택지를 고칠 때마다 AI가 정답·해설만 새로 써요(문제 글은 그대로). 계산 문제는 프로그램이 한 번 더 "
+                           "검산해요. 끄면 정답·해설은 직접 고쳐야 해요.")
+            st.segmented_control("글자 크기·답 칸 (학년)", list(LEVEL_CHOICES), default=ss.doc_level, key="w_level_r",
                                  format_func=LEVEL_CHOICES.get, on_change=_sync, args=("doc_level", "w_level_r"))
             with st.expander("모양 세부 조정·저장"):
                 style_editor()
-            with st.expander("JSON으로 직접 고치기 (익숙한 분만)"):
-                json_panel()
+    if pending := ss.pop("answer_pending", None):  # 왼쪽 편집기가 고친 글을 저장한 뒤에 정답·해설을 다시 맞춘다
+        with left:
+            _refresh_answers(pending)
+        st.rerun()
 
 
 # =====================================================================

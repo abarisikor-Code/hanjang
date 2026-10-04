@@ -5,7 +5,7 @@
 ## 핵심 원칙 (절대 깨지 말 것)
 - **AI는 구조와 선택만, 코드는 모양만.** Gemini는 `Worksheet` JSON과 `Theme` 선택지 값만 반환한다.
   AI가 HTML/CSS/색상/크기 값을 만들게 하지 않는다. 참고 학습지의 스타일도 `THEME_OPTIONS` 안에서 고르게 한다.
-- 디자인 규칙은 `worksheet_maker/templates/worksheet.css` 한 곳에 둔다. 값은 CSS 변수(학교급 `--base` 등, 테마 `--b1~4` 등),
+- 디자인 규칙은 `worksheet_maker/templates/worksheet.css` 한 곳에 둔다. 값은 CSS 변수(학년 `--base` 등 — 초등 1~2 lower / 3~4 elementary / 5~6 upper, 예전 middle·high는 upper로, 테마 `--b1~4` 등),
   모양 차이는 `<body>`의 `hd-* sec-* qn-* tag-*` 클래스로만 만든다.
 - 번호(문항 1, 2… / 활동 1, 2… / 선택지 ①②…)는 `render.py`가 붙인다. AI 출력의 번호는 지운다.
 - 흑백 레이저·갱지 인쇄 기준: 넓은 회색 면을 피하고 선으로 구분한다. (`shade: light`는 선택 사항)
@@ -82,6 +82,10 @@
 - Gemini 그림 모델은 쓰지 않는다(무료 키 한도 0, 결제 키 사용자 없음).
 - 고른 배울 내용은 체크박스와 따로 `ss.sel["<prefix>|<과목>"]`(코드 목록)에 기억한다(영역을 바꿔도 유지).
   체크박스 `on_change=_toggle_code`, 사이드바 `selection_box`와 만들기 버튼 위에 요약. 단일과목형 여러 내용 → `mix`(separate/combined).
+- 손으로 고친 문항의 정답·해설: 질문·선택지(`_CONTENT_FIELDS` body·items, 정답 칸이 있는 `_ANSWER_TYPES`)를 고치면
+  `_content_changed`가 `ss.answer_pending`에 넣고, 완성 화면 끝(왼쪽 편집기가 새 글을 저장한 뒤)에 `_refresh_answers`가
+  `revise_block(_ANSWER_ONLY)`의 answer·solution만 가져다 쓰고(문제 글은 AI 결과를 버린다) `verify.check`로 한 번 더 검산한다.
+  `ss.auto_answer`(더 많은 설정 토글, 기본 켬). 그 자리 고치기(`text` 동작)도 같다.
 - 고치기 '✨ AI 도움'(`app._ai_help`) → `llm.revise_block`(스키마는 `schema.block_schema`): 추천안을 `ss["<id>_sugg"]`에 두고
   '적용'을 눌러야 바뀐다. 적용 시 그 구성요소의 위젯 키(`<id>_*`)를 지워 입력칸이 새 값으로 다시 그려지게 한다.
 - 학습지 모양 고르기는 `render(..., thumbnail=True)`(125mm 좁은 종이) 미리보기를 `st.iframe`으로 보여 준다.
@@ -113,7 +117,7 @@
   글자 크기는 스크립트 `fitText`가 줄인다). 첫 쪽만 쓰고 다음 쪽은 같은 폭으로 문제만. 앱은 `_img_split`(막대)·📐(글 상자 위치).
   예전 그림 위 칸 방식(`Form.pages`, `find_form_regions`)은 올릴 때 고를 수 있게 남겨 두었다.
   .hwp는 `forms.hwp_preview`(olefile)로 첫 쪽 미리보기 그림만 꺼내 그림 양식으로 쓴다.
-- `worksheet_maker/saved.py` — 저장한 HTML 안의 `<script type="application/json" id="hanjang-data">`에 구조·테마·학교급·꼬리말을 담고(`pack`), 다시 꺼낸다(`unpack`).
+- `worksheet_maker/saved.py` — 저장한 HTML 안의 `<script type="application/json" id="hanjang-data">`에 구조·테마·학년·꼬리말을 담고(`pack`), 다시 꺼낸다(`unpack`).
   저장 형식을 바꿀 때는 `FORMAT_VERSION`을 올리고 예전 파일도 열리게 유지한다. (2: `form` 추가, 3: `form.doc` 한글 양식)
 - **배포**(키는 각자): `app.LOCAL`(`HANJANG_LOCAL=1`, `run.bat`·포터블·`.claude/launch.json`의 app만 준다)일 때만 서버 `.env` 키를
   읽고, '이 컴퓨터에 키 기억하기'(`_remember_key` → `.env`), 양식·모양 디스크 저장을 쓴다. 그 밖(Streamlit Cloud 인터넷판)은 키를
@@ -125,7 +129,7 @@
 - `app.py` — Streamlit 화면. 초보자용 **단계형 흐름**(`ss.page`):
   `home`(카드 3개) → 한 과목 `s1`→`s2`→`s3` / 융합 `f1`→`f2`→`f3` / 내 자료 `tools` → 완성 `result`.
   - 화면을 옮겨도 남아야 하는 값은 위젯 키가 아닌 별도 키에 둔다: `ss.grade`, `ss.subject`, `ss.fusion_subjects`,
-    `ss.doc_level`(학교급), `ss.footer_text`, `ss.answers_on`, 고른 성취기준 `ss.sel`. 위젯은 `w_*` 키 + `on_change=_sync`.
+    `ss.doc_level`(학년: `render.level_key`·`grade_level`), `ss.footer_text`, `ss.answers_on`, 고른 성취기준 `ss.sel`. 위젯은 `w_*` 키 + `on_change=_sync`.
     (Streamlit은 그 화면에 그려지지 않은 위젯의 값을 지운다.) 학년마다 과목 목록이 달라 과목 위젯 키에 학년을 붙인다.
   - 만들기는 `_run(req)` 하나로: `req`를 `ss.last_req`에 저장해 완성 화면의 '🔄 다시 만들기'에 쓴다.
   - 완성 화면: 왼쪽 탭(내용 고치기 `block_list` / 모양 `theme_gallery` / 제목·목표 `header_panel`+AI 채우기 / 더 많은 설정,

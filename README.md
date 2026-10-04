@@ -137,7 +137,7 @@ Gemini API 키는 **쓰는 사람마다 자기 것**을 넣습니다([무료 발
 ## 조판만 따로 실행 (AI 없이)
 
 ```bash
-python -m worksheet_maker.render examples/sample.json --level middle --theme themes/교과서형.json
+python -m worksheet_maker.render examples/sample.json --level upper --theme themes/교과서형.json
 ```
 
 개발 원칙과 구조는 [CLAUDE.md](CLAUDE.md)에 있습니다.

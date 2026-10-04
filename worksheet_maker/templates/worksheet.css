@@ -1,5 +1,5 @@
 /* ===== A4 흑백 인쇄 학습지 공통 규격 =====
-   값은 모두 변수로 받는다: 학교급(--base, --lh, --line-h), 테마(--b1~4 선 굵기, --radius, --shade, --gap, --font-*).
+   값은 모두 변수로 받는다: 학년(--base, --lh, --line-h), 테마(--b1~4 선 굵기, --radius, --shade, --gap, --font-*).
    테마별 모양 차이는 body의 hd-*, sec-*, qn-*, tag-* 클래스로만 둔다. */
 
 @page {
