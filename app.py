@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -47,6 +48,47 @@ def _remember_key(key: str) -> None:
     ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.environ["GEMINI_API_KEY"] = key
     st.session_state["w_api_key"] = key
+
+
+# 인터넷판: '이 브라우저에 키 기억하기'를 켜면 키를 그 브라우저의 쿠키에만 둔다(서버에는 저장하지 않는다).
+# 다음 접속 때 st.context.cookies로 읽어 칸을 채운다. 쿠키 값은 키 모양(영문·숫자·_-)일 때만 쓰고 넣는다.
+KEY_COOKIE = "hanjang_key"
+_KEY_SHAPE = re.compile(r"[A-Za-z0-9_\-]{20,80}")
+
+
+def _browser_key() -> str:
+    try:
+        raw = st.context.cookies.get(KEY_COOKIE)
+    except Exception:  # 쿠키를 읽을 수 없는 환경
+        return ""
+    value = urllib.parse.unquote(raw) if isinstance(raw, str) else ""
+    return value if _KEY_SHAPE.fullmatch(value) else ""
+
+
+def _write_key_cookie(key: str) -> None:
+    """브라우저 쿠키에 키를 적거나(key) 지운다(""). 1년 동안, 이 사이트에서만(secure, samesite=strict)."""
+    if key and _KEY_SHAPE.fullmatch(key):
+        cookie = f"{KEY_COOKIE}={key}; path=/; max-age=31536000; secure; samesite=strict"
+    else:
+        cookie = f"{KEY_COOKIE}=; path=/; max-age=0; secure; samesite=strict"
+    st.html(f"<script>document.cookie = {json.dumps(cookie)};</script>", unsafe_allow_javascript=True)
+
+
+def _key_memory_changed() -> None:
+    ss.key_remembered = bool(ss.get("w_key_mem"))
+    ss.key_cookie_sync = True
+
+
+def _key_typed() -> None:
+    if ss.get("key_remembered"):
+        ss.key_cookie_sync = True  # 기억해 둔 상태에서 키를 바꾸면 쿠키도 바꾼다
+
+
+def _forget_browser_key() -> None:
+    ss.key_remembered = False
+    ss.w_key_mem = False
+    ss.w_api_key = ""
+    ss.key_cookie_sync = True
 
 
 def key_help() -> None:
@@ -206,10 +248,12 @@ with st.sidebar:
     st.divider()
     env_key = os.getenv("GEMINI_API_KEY", "").strip() if LOCAL else ""  # 인터넷판은 서버 키를 절대 쓰지 않는다
     if "w_api_key" not in ss:
-        ss.w_api_key = env_key
+        browser_key = "" if LOCAL else _browser_key()
+        ss.w_api_key = env_key or browser_key
+        ss.key_remembered = bool(browser_key)
     with st.expander("⚙️ 설정", expanded=not ss.w_api_key):
         api_key = st.text_input(
-            "Gemini API 키", type="password", key="w_api_key",
+            "Gemini API 키", type="password", key="w_api_key", on_change=_key_typed,
             help=f"{KEY_URL} 에서 무료로 받을 수 있어요. 받는 방법은 아래 '🔑 키 받는 방법'을 보세요.",
         ).strip()
         if LOCAL:
@@ -219,8 +263,19 @@ with st.sidebar:
             elif env_key:
                 st.caption("🔑 이 컴퓨터에 기억해 둔 키를 쓰고 있어요.")
                 st.button("기억한 키 지우기", on_click=_remember_key, args=("",), width="stretch")
-        elif api_key:
-            st.caption("🔒 키는 이 브라우저 창에서만 쓰이고 서버에 저장되지 않아요. 창을 닫으면 지워져요.")
+        else:
+            if api_key or ss.get("key_remembered"):
+                ss.w_key_mem = bool(ss.get("key_remembered"))
+                st.checkbox("💾 이 브라우저에 키 기억하기", key="w_key_mem", on_change=_key_memory_changed,
+                            help="다음에 접속할 때 키가 자동으로 채워져요. 키는 이 컴퓨터의 이 브라우저에만 남고 서버에는 "
+                                 "저장되지 않아요. 학교 공용 컴퓨터에서는 켜지 마세요.")
+            if ss.get("key_remembered"):
+                st.caption("🔑 이 브라우저에 키를 기억해 두었어요. 여러 사람이 쓰는 컴퓨터라면 지워 주세요.")
+                st.button("기억한 키 지우기", on_click=_forget_browser_key, width="stretch", key="forget_browser_key")
+            elif api_key:
+                st.caption("🔒 키는 이 브라우저 창에서만 쓰이고 서버에 저장되지 않아요. 창을 닫으면 지워져요.")
+            if ss.pop("key_cookie_sync", False):
+                _write_key_cookie(api_key if ss.get("key_remembered") else "")
         if not api_key:
             with st.popover("🔑 키 받는 방법", width="stretch"):
                 key_help()
