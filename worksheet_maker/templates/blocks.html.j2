@@ -5,7 +5,7 @@
 
 {% for b, num in blocks %}
 {% set ex = extras[loop.index0] %}
-{% set ed = edit_attr(loop.index0) if editable else "" %}
+{% set ed = block_attrs(loop.index0) %}
 {% if b.type == "section" %}
 <h2 class="sec"{{ ed }}>{{ (b.title or b.body)|inline }}</h2>
 
@@ -93,11 +93,13 @@
 {% elif b.type == "ox" %}
 <section class="blk q ox"{{ ed }}>
   {{ q_head(num, b.title or "다음 설명이 맞으면 O, 틀리면 X에 표시하시오.", pts=ex.pts) }}
+  {% if b.items %}
   <table class="ox-table">
     {% for it in b.items %}
     <tr><td class="ox-no">({{ loop.index }})</td><td>{{ it|inline }}</td><td class="ox-mark">O &nbsp;·&nbsp; X</td></tr>
     {% endfor %}
   </table>
+  {% else %}<div class="img-placeholder">O/X로 고를 진술문이 비어 있어요 — 편집 화면에서 넣거나 ✨ AI 도움을 써 주세요</div>{% endif %}
 </section>
 
 {% elif b.type == "drawing" %}

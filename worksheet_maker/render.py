@@ -36,6 +36,9 @@ def level_key(level: str | None) -> str:
 def grade_level(grade: int) -> str:
     return "lower" if grade <= 2 else "elementary" if grade <= 4 else "upper"
 
+PER_PAGE = 10  # 한 쪽에 문제 10개까지 (초등학생이 풀 공간이 있어야 한다)
+
+
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _BLANK = re.compile(r"\[\[(.*?)\]\]")
@@ -133,8 +136,7 @@ def _env() -> Environment:
         svg=render_svg,
         option_text=_option_text,
     )
-    env.globals.update(CIRCLED=CIRCLED, IMAGE_SIZES=IMAGE_SIZES, option_cols=_option_cols, concept_item=_concept_item,
-                       edit_attr=lambda i: Markup(f' data-bi="{int(i)}"'))
+    env.globals.update(CIRCLED=CIRCLED, IMAGE_SIZES=IMAGE_SIZES, option_cols=_option_cols, concept_item=_concept_item)
     return env
 
 
@@ -144,6 +146,7 @@ def render(
     thumbnail: bool = False,  # 학습지 모양 고르기용 작은 미리보기 (좁은 종이)
     form: Form | None = None,  # 내 학습지 양식: 이 양식 쪽 그림 위의 칸에 내용을 담는다
     edit: bool = False,  # 앱 미리보기 전용: 학습지 위에서 바로 고치는 도구(끌어서 옮기기·도구 막대)를 넣는다
+    per_page: int = PER_PAGE,  # 한 쪽에 문제 몇 개까지 (0이면 나누지 않는다). 초등학생이 풀 공간을 두려고.
 ) -> str:
     lv = dict(LEVELS[level_key(level)])
     theme = theme or Theme()
@@ -167,9 +170,16 @@ def render(
             num = fig_num
         numbered.append((b, num))
     extras = _extras(ws, numbered)
+    form = None if thumbnail else form
+    # 한 쪽에 문제 몇 개까지: 쪽 나눔은 인쇄 크기로 재어야 해서 HTML 안의 스크립트가 한다 (연습 문제지·놀이는 촘촘한 그대로)
+    paged = int(per_page) if per_page and not thumbnail and ws.kind not in ("drill", "game") else 0
+    editable = edit and not thumbnail
+
+    def block_attrs(i: int) -> Markup:
+        """블록 맨 바깥 태그에 붙일 속성: 학습지 위에서 고치기용 번호(data-bi)."""
+        return Markup(f' data-bi="{int(i)}"') if editable else Markup("")
 
     running = " · ".join(x for x in (ws.subject, ws.title) if x)
-    form = None if thumbnail else form
     doc = docform.parts(form.doc, ws) if form and form.doc else None  # 한글 양식: 머리·꼬리 HTML과 문제 자리 모양
     form_pages = [_form_page(p) for p in form.pages] if form and not doc else []
     return _env().get_template("worksheet.html.j2").render(
@@ -184,7 +194,9 @@ def render(
         show_answers=show_answers,
         show_print_button=show_print_button and not thumbnail,
         thumbnail=thumbnail,
-        editable=edit and not thumbnail,
+        editable=editable,
+        block_attrs=block_attrs,
+        per_page=paged,
         form_pages=form_pages,
         doc=doc,
         form_has_title=doc["has_title"] if doc else any(r.kind == "title" for p in (form.pages if form else []) for r in p.regions),

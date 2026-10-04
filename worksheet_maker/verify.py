@@ -201,6 +201,35 @@ _SOURCES = [
 ]
 
 
+_OX_ONLY = re.compile(r"^[\s()（）\[\]\d.,:：OXox○×·]*$")  # 정답 표시만 있는 줄 ('O', '(1) O (2) X')
+_OX_INSTR = re.compile(r"(맞으면|옳으면|같으면|바르면|틀리면|다르면|아니면).{0,15}[OX○×]|O\s*,?\s*X\s*(에|를|로)")
+
+
+def repair_ox(b) -> bool:
+    """O/X 문항의 진술문이 화면에 안 나오는 본문(body)으로 들어가고, 진술문 칸에는 정답 표시('O', '(1) O (2) X')만 남은 경우를
+    바로잡는다: 정답 표시뿐인 줄은 빼고, 본문의 진술문은 진술문 칸으로, 본문의 지시문은 지시문(title)으로. 바꿨으면 True."""
+    if b.type != "ox":
+        return False
+    before = (b.title, b.body, list(b.items), b.answer)
+    b.items = [it for it in b.items if it.strip() and not _OX_ONLY.match(it)]
+    body = b.body.strip()
+    if body:
+        sents = [s.strip() for s in re.split(r"(?<=[.!?。])\s+", body) if s.strip()]
+        instr = [s for s in sents if _OX_INSTR.search(s)]
+        stmts = [_OX_MARK.sub("", s) for s in sents if not _OX_INSTR.search(s)]
+        if not b.items and stmts:
+            n_marks = len(re.findall(r"\(\d{1,2}\)", b.answer))
+            b.items = stmts if n_marks == len(stmts) > 1 else [" ".join(stmts)]
+            if instr and not b.title.strip():
+                b.title = " ".join(instr)
+        elif not b.title.strip():
+            b.title = body  # 진술문은 따로 있고 본문은 지시문·안내 — 화면에 보이는 지시문 자리로
+        b.body = ""
+    if len(b.items) == 1 and re.fullmatch(r"\s*[OX○×]\s*", b.answer):  # 진술문 하나에 정답 'O' → '(1) O'
+        b.answer = f"(1) {'O' if b.answer.strip() in ('O', '○') else 'X'}"
+    return (b.title, b.body, b.items, b.answer) != before
+
+
 def strip_numbers(ws: Worksheet) -> None:
     """AI가 문항 앞에 쓴 번호('1번 문항', '문제 3', '3.')를 지운다 — 번호는 render가 붙인다.
     O/X 진술문 끝에 붙은 정답('(O)')을 지우고, 정답 없는 안내 문장('~살펴보세요')은 문항이 아닌 설명 글로 바꾼다."""
@@ -209,6 +238,7 @@ def strip_numbers(ws: Worksheet) -> None:
             b.body = _NUM_PREFIX.sub("", b.body, count=1)
             b.title = _NUM_PREFIX.sub("", b.title, count=1)
         if b.type == "ox":  # '(1)' 같은 번호와 끝에 붙은 정답을 지운다 (정답 칸이 비었으면 그 표시를 정답으로 옮긴다)
+            repair_ox(b)
             marks = [_OX_MARK.search(it) for it in b.items]
             if not b.answer.strip() and b.items and all(marks):
                 b.answer = " ".join(f"({i}) {'O' if m.group(0).strip(' ()（）[]').upper() in ('O', '○') else 'X'}"
@@ -316,6 +346,8 @@ def figure_issues(ws: Worksheet) -> list[tuple[int, str]]:
             continue
         num += 1
         text = f"{b.title} {b.body}"
+        if b.type == "ox" and not b.items:
+            found.append((num, "O/X 문항에 맞는지 고를 진술문이 없어요"))
         if b.type == "multiple_choice":
             opts = [re.sub(r"\s+", " ", _option_text(o)).strip() for o in b.items]  # 띄어쓰기 문제는 공백만 달라도 다른 보기
             if len(set(opts)) < len(opts):

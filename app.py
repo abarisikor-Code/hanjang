@@ -26,7 +26,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx, images, kinds, llm, verify
-from worksheet_maker.render import LEVELS, grade_level, level_key, render
+from worksheet_maker.render import LEVELS, PER_PAGE, grade_level, level_key, render
 from worksheet_maker.saved import LoadError, unpack
 from worksheet_maker.schema import BLOCK_TYPES, IMAGE_SIZES, QUESTION_TYPES, Block, Worksheet
 from worksheet_maker.theme import THEME_OPTIONS, Theme, list_themes, save_theme
@@ -191,6 +191,7 @@ if "ws" not in ss:
     # 화면을 옮겨 다녀도 사라지지 않게, 위젯과 따로 기억하는 값들
     ss.doc_level = "elementary"  # 글자 크기·답 칸을 정하는 학년 (초등 1~2 / 3~4 / 5~6)
     ss.auto_answer = True  # 문제를 직접 고치면 정답·해설도 AI가 다시 맞춘다
+    ss.per_page_on = True  # 한 쪽에 문제 10개까지 (풀 공간)
     ss.footer_text = ""
     ss.answers_on = True
     ss.wkind = "standard"  # 학습지 유형 (kinds.KINDS): 3단계에서 고르고 다음 학습지에도 이어 쓴다
@@ -1925,6 +1926,10 @@ def _preview_action(a: dict) -> str:
     return _EDIT_MSG.get(act, "")
 
 
+def _per_page() -> int:
+    return PER_PAGE if ss.get("per_page_on", True) else 0
+
+
 def preview_editor(ws: Worksheet) -> None:
     if "preview_msg" in ss:
         st.toast(ss.pop("preview_msg"))
@@ -1939,7 +1944,7 @@ def preview_editor(ws: Worksheet) -> None:
         ss.preview_msg = "되돌렸어요." if _undo() else "되돌릴 것이 없어요."
         st.rerun()
     html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=show_answers,
-                  form=current_form(), edit=True)
+                  form=current_form(), edit=True, per_page=_per_page())
     fields = _edit_data(ws)
     version = hashlib.md5((html + json.dumps(fields, ensure_ascii=False)).encode("utf-8")).hexdigest()
     res = _preview_component(key="preview", data={"html": html, "v": version, "height": PREVIEW_H, "fields": fields},
@@ -1955,9 +1960,22 @@ def preview_editor(ws: Worksheet) -> None:
 # =====================================================================
 # ✅ 완성: 큰 미리보기 + 저장·인쇄 + 고치기·모양 바꾸기
 # =====================================================================
+def _repair_blocks() -> None:
+    """예전에 만든 학습지도 바로잡는다: O/X 진술문이 보이지 않는 본문에 들어가 '(1) O (2) X'만 보이던 문항 (verify.repair_ox)."""
+    for raw in ss.ws["blocks"]:
+        if raw.get("type") != "ox":
+            continue
+        b = Block.model_validate({k: v for k, v in raw.items() if k != "_id"})
+        if verify.repair_ox(b):
+            raw.update(title=b.title, body=b.body, items=b.items, answer=b.answer)
+            _forget_widgets(raw["_id"])
+
+
 def page_result() -> None:
+    _repair_blocks()
     ws = current_worksheet()
-    html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=show_answers, form=current_form())
+    html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=show_answers, form=current_form(),
+                  per_page=_per_page())
     if ss.get("last_req"):
         step_bar(SINGLE_STEPS if ss.last_req["kind"] == "single" else FUSION_STEPS, 4)
     if "p_msg" in ss:
@@ -2014,6 +2032,10 @@ def page_result() -> None:
             header_panel()
         with tabs[3]:
             st.toggle("정답·해설 쪽 넣기", value=ss.answers_on, key="w_answers", on_change=_sync, args=("answers_on", "w_answers"))
+            st.toggle(f"📄 한 쪽에 문제 {PER_PAGE}개까지 (남는 곳은 문제마다 풀 공간으로)", value=ss.get("per_page_on", True),
+                      key="w_per_page", on_change=_sync, args=("per_page_on", "w_per_page"),
+                      help="문제가 많으면 다음 쪽으로 넘기고, 쪽에 남는 높이를 문제마다 나눠 아래에 풀 공간을 둬요. "
+                           "연습 문제지·놀이 학습지는 촘촘한 그대로예요.")
             st.toggle("✍️ 문제를 직접 고치면 정답·해설도 AI가 바로 다시 맞추기", value=ss.get("auto_answer", True),
                       key="w_auto_answer", on_change=_sync, args=("auto_answer", "w_auto_answer"),
                       help="문제 글이나 선택지를 고칠 때마다 AI가 정답·해설만 새로 써요(문제 글은 그대로). 계산 문제는 프로그램이 한 번 더 "

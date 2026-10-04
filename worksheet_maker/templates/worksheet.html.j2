@@ -124,6 +124,7 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
   var images = data.form.pages.map(function (p) { return p.image; });
   var title = data.worksheet.title || "";
   var tpls = Array.prototype.slice.call(document.querySelectorAll("template.form-tpl"));
+  var PER_PAGE = {{ per_page|int }};
   var src = document.getElementById("form-src"), out = document.getElementById("form-out");
   var root = document.documentElement;
 
@@ -149,14 +150,18 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
         el.textContent = title;  // 쪽마다 같은 제목
         fitTitle(el);
       });
-      var before = queue.length;
+      var before = queue.length, newPage = false, nq = 0;
       Array.prototype.forEach.call(page.querySelectorAll(".form-box"), function (box) {
-        while (queue.length) {
+        while (queue.length && !newPage) {
+          var isQ = queue[0].classList && queue[0].classList.contains("q");
+          if (PER_PAGE && isQ && nq >= PER_PAGE) { newPage = true; break; }  // 한 쪽에 문제 PER_PAGE개까지
           box.appendChild(queue[0]);
           if (box.scrollHeight > box.clientHeight + 1) {
             if (box.children.length > 1) { box.removeChild(queue[0]); break; }
+            if (isQ) nq++;
             queue.shift(); break;  // 칸 하나보다 큰 내용: 혼자 그 칸에 둔다
           }
+          if (isQ) nq++;
           queue.shift();
         }
         // 칸 맨 끝에 소제목만 남으면 뒤 내용과 함께 다음 칸으로 넘긴다
@@ -217,7 +222,96 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
     {% endif %}
     document.documentElement.style.setProperty("--fit", z.toFixed(3));
   }
+  // 쪽 나누기: 한 쪽에 문제 PER_PAGE개까지, 남는 높이는 그 쪽 문제마다 아래 풀 공간으로 (초등학생이 풀 자리).
+  // 블록 높이를 재어 쪽을 미리 짠다: 다음 블록이 넘치거나 문제가 다 찼으면 새 쪽(.pg-break). 소제목·그림처럼 문제를 이끄는
+  // 블록은 그 문제와 같은 쪽으로. 인쇄 본문 높이는 297 - 위 16 - 아래 18 = 263mm인데, 넘치지 않게 3mm 덜(260mm) 잡는다 — 화면과 인쇄에서 잰 높이는 같다.
+  var PER_PAGE = {{ per_page|int }};
+  function paginate() {
+    var body = document.querySelector("main.sheet:not(.answer-sheet) .ws-body");
+    if (!PER_PAGE || !body) return;
+    var sheet = body.parentElement;
+    Array.prototype.forEach.call(document.querySelectorAll(".ws-body[data-split]"), function (part) {  // 앞서 나눈 2단을 되돌린다
+      while (part.firstChild) body.appendChild(part.firstChild);
+      part.parentNode.removeChild(part);
+    });
+    var items = Array.prototype.slice.call(body.children);
+    items.forEach(function (el) { el.classList.remove("pg-break"); el.style.paddingBottom = ""; });
+    if (!items.length) return;
+    if ((parseInt(getComputedStyle(body).columnCount, 10) || 1) > 1) {
+      // 2단(단원평가지): 높이로 짤 수 없고 2단 안의 쪽 나눔은 인쇄에서 무시되므로, 문제 PER_PAGE개마다 2단 상자를 새로 연다
+      var count = 0, lead = null, cuts = [];
+      items.forEach(function (el) {
+        if (!el.classList.contains("q")) { if (lead === null) lead = el; return; }
+        if (count === PER_PAGE) { cuts.push(lead || el); count = 0; }
+        count++;
+        lead = null;
+      });
+      var cur = body;
+      cuts.forEach(function (cut) {
+        var part = document.createElement("div");
+        part.className = body.className + " pg-break";
+        part.setAttribute("data-split", "1");
+        cur.parentNode.insertBefore(part, cur.nextSibling);
+        var node = cut;
+        while (node) { var next = node.nextSibling; part.appendChild(node); node = next; }
+        cur = part;
+      });
+      return;
+    }
+    var probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;visibility:hidden;width:1px;height:100mm";
+    sheet.appendChild(probe);
+    var pxmm = probe.offsetHeight / 100;
+    sheet.removeChild(probe);
+    if (!pxmm) return;
+    var PAGE = 260 * pxmm;
+    var start = body.offsetTop - (parseFloat(getComputedStyle(sheet).paddingTop) || 0);  // 첫 쪽 머리말 높이
+    var tops = items.map(function (el) { return el.offsetTop; });
+    var heights = items.map(function (el, k) {
+      if (k + 1 < items.length) return tops[k + 1] - tops[k];
+      return el.offsetHeight + (parseFloat(getComputedStyle(el).marginBottom) || 0);
+    });
+    function isQ(k) { return items[k].classList.contains("q"); }
+    function sum(list) { return list.reduce(function (a, k) { return a + heights[k]; }, 0); }
+
+    var pages = [[]], used = start, nq = 0;
+    items.forEach(function (el, k) {
+      var page = pages[pages.length - 1], h = heights[k];
+      if (page.length && (used + h > PAGE || (isQ(k) && nq >= PER_PAGE))) {
+        var cut = page.length;  // 이 문제를 이끄는 블록(소제목·그림·자료)은 함께 다음 쪽으로
+        if (isQ(k)) {
+          while (cut > 0 && !isQ(page[cut - 1])) cut--;
+          if (cut === 0 || sum(page.slice(cut)) > PAGE * 0.4) cut = page.length;
+        }
+        var moved = page.splice(cut);
+        page = moved.concat([k]);
+        pages.push(page);
+        used = sum(page);
+        nq = page.filter(isQ).length;
+      } else {
+        page.push(k);
+        used += h;
+        if (isQ(k)) nq++;
+      }
+    });
+    pages.forEach(function (page, n) {
+      if (!page.length) return;
+      if (n > 0) items[page[0]].classList.add("pg-break");
+      var qs = page.filter(isQ);
+      if (!qs.length) return;
+      var left = PAGE - sum(page) - (n === 0 ? start : 0);
+      var last = n === pages.length - 1;
+      var room = Math.min(left / qs.length, (last ? 25 : 45) * pxmm) / pxmm;  // mm, 마지막 쪽은 조금만
+      if (room < 2) return;
+      qs.forEach(function (k) {
+        var base = parseFloat(getComputedStyle(items[k]).paddingBottom) || 0;
+        items[k].style.paddingBottom = "calc(" + base + "px + " + room.toFixed(1) + "mm)";
+      });
+    });
+  }
   fit();
+  paginate();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(paginate);
   window.addEventListener("resize", fit);
 })();
 </script>

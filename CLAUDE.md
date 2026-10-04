@@ -82,6 +82,15 @@
 - Gemini 그림 모델은 쓰지 않는다(무료 키 한도 0, 결제 키 사용자 없음).
 - 고른 배울 내용은 체크박스와 따로 `ss.sel["<prefix>|<과목>"]`(코드 목록)에 기억한다(영역을 바꿔도 유지).
   체크박스 `on_change=_toggle_code`, 사이드바 `selection_box`와 만들기 버튼 위에 요약. 단일과목형 여러 내용 → `mix`(separate/combined).
+- **쪽 나누기**(초등학생 풀 공간): `render(per_page=PER_PAGE=10)` — 쪽 높이를 재야 하므로 HTML 안의 스크립트 `paginate()`가
+  .ws-body의 블록 높이(offsetTop 차이, 100mm 탐침으로 mm 환산 — 화면과 인쇄에서 같다)로 쪽을 짜고(본문 260mm, 첫 쪽은 머리말만큼 뺌),
+  넘치거나 문제가 10개 차면 새 쪽(`.pg-break`). 문제를 이끄는 소제목·그림은 함께 넘긴다(쪽의 40%까지). 남는 높이는 그 쪽 문제
+  블록의 padding-bottom으로 나눈다(쪽마다 45mm, 마지막 쪽 25mm까지). 연습 문제지·놀이(drill·game)는 하지 않고, 양식 흐름 스크립트는
+  담은 문제 수(`PER_PAGE`)로 새 쪽을 연다. 앱 토글 `ss.per_page_on`. 2단(단원평가지 test)은 높이로 짤 수 없고 2단 안의
+  `break-before: page`는 인쇄에서 무시되므로, 문제 10개마다 .ws-body를 새 2단 상자(`data-split`, `.pg-break`)로 나눈다(벌리기 없음).
+- O/X 문항: AI가 진술문을 body(O/X 틀에서 안 보임)에 넣고 items에 정답 표시만 두는 일이 있다(점검 626개 중 5개).
+  `verify.repair_ox`가 정답 표시뿐인 줄을 빼고 body의 진술문→items, 지시문→title로 옮긴다(생성 뒤처리 `strip_numbers`, 완성 화면
+  `_repair_blocks`로 예전 학습지도). 진술문이 없으면 `figure_issues`가 알려 AI 검토가 다시 쓴다.
 - 손으로 고친 문항의 정답·해설: 질문·선택지(`_CONTENT_FIELDS` body·items, 정답 칸이 있는 `_ANSWER_TYPES`)를 고치면
   `_content_changed`가 `ss.answer_pending`에 넣고, 완성 화면 끝(왼쪽 편집기가 새 글을 저장한 뒤)에 `_refresh_answers`가
   `revise_block(_ANSWER_ONLY)`의 answer·solution만 가져다 쓰고(문제 글은 AI 결과를 버린다) `verify.check`로 한 번 더 검산한다.
