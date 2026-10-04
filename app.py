@@ -75,21 +75,34 @@ _KEY_SHAPE = re.compile(r"[A-Za-z0-9_\-]{20,80}")
 _KEY_STORE_JS = """
 export default function (component) {
   const { data, setStateValue, parentElement } = component;
-  let store = null;
-  try { store = window.localStorage; } catch (e) { return; }
   const host = parentElement;
+  let store = null;
+  try { store = window.localStorage; } catch (e) { store = null; host.__hjErr = (e && e.name) || "error"; }
   if (data && data.op && host.__hjOp !== data.n) {
     host.__hjOp = data.n;
+    let result = "saved";
     try {
-      if (data.op === "save" && data.key) store.setItem("hanjang_key", data.key);
-      if (data.op === "forget") store.removeItem("hanjang_key");
-    } catch (e) {}
+      if (!store) throw { name: host.__hjErr || "NoStorage" };
+      if (data.op === "save" && data.key) {
+        store.setItem("hanjang_key", data.key);
+        if (store.getItem("hanjang_key") !== data.key) result = "savefail:readback";
+      }
+      if (data.op === "forget") { store.removeItem("hanjang_key"); result = "forgot"; }
+    } catch (e) { result = "savefail:" + ((e && e.name) || "error"); }
+    setStateValue("saved", result + "#" + data.n);  // 저장한 뒤 다시 읽어 확인한 결과
   }
   if (!host.__hjRead) {
     host.__hjRead = true;
-    document.cookie = "hanjang_key=; path=/; max-age=0; secure; samesite=strict";
-    let saved = "";
-    try { saved = store.getItem("hanjang_key") || ""; } catch (e) {}
+    try { document.cookie = "hanjang_key=; path=/; max-age=0; secure; samesite=strict"; } catch (e) {}
+    let probe = "ok", saved = "";
+    try {
+      if (!store) throw { name: host.__hjErr || "NoStorage" };
+      store.setItem("hanjang_probe", "1");
+      if (store.getItem("hanjang_probe") !== "1") probe = "readback";
+      store.removeItem("hanjang_probe");
+      saved = store.getItem("hanjang_key") || "";
+    } catch (e) { probe = "blocked:" + ((e && e.name) || "error"); }
+    setStateValue("probe", probe);  // 이 브라우저가 이 사이트에 저장을 허락하는지
     setStateValue("stored", saved);
   }
 }
@@ -104,7 +117,16 @@ def _browser_key_sync() -> None:
     if op:
         ss.key_op_n = ss.get("key_op_n", 0) + 1
         data = {"op": op[0], "key": op[1] if op[0] == "save" and _KEY_SHAPE.fullmatch(op[1]) else "", "n": ss.key_op_n}
-    res = _key_store(key="key_store", data=data, on_stored_change=lambda: None)
+    res = _key_store(key="key_store", data=data, on_stored_change=lambda: None, on_probe_change=lambda: None,
+                     on_saved_change=lambda: None)
+    probe, saved = getattr(res, "probe", None), getattr(res, "saved", None)
+    if isinstance(probe, str):
+        ss.key_probe = probe[:60]
+    if isinstance(saved, str) and saved != ss.get("key_saved_raw"):
+        ss.key_saved_raw = saved
+        ss.key_saved = saved.split("#")[0][:60]
+        if ss.key_saved.startswith("savefail"):
+            ss.key_remembered = False  # 저장이 안 됐으면 '기억해 두었어요'라고 하지 않는다 (체크칸도 다시 꺼진다)
     stored = getattr(res, "stored", None)
     if isinstance(stored, str) and _KEY_SHAPE.fullmatch(stored) and not ss.get("key_loaded"):
         ss.key_loaded = True  # 접속할 때 한 번만 (사용자가 칸을 비운 뒤에 다시 채우지 않게)
@@ -312,6 +334,13 @@ with st.sidebar:
                 st.checkbox("💾 이 브라우저에 키 기억하기", key="w_key_mem", on_change=_key_memory_changed,
                             help="다음에 접속할 때 키가 자동으로 채워져요. 키는 이 컴퓨터의 이 브라우저에만 남고 서버에는 "
                                  "저장되지 않아요. 학교 공용 컴퓨터에서는 켜지 마세요.")
+            probe, saved = ss.get("key_probe", ""), ss.get("key_saved", "")
+            if probe.startswith("blocked") or probe == "readback" or saved.startswith("savefail"):
+                st.warning("⚠️ 이 브라우저가 이 사이트에 저장하는 것을 막고 있어서 키를 기억할 수 없어요. 브라우저 설정의 "
+                           "'쿠키 및 사이트 데이터'에서 hanjang.streamlit.app을 허용하거나, 포터블판을 써 주세요. "
+                           f"(확인 결과: {md(probe if probe != 'ok' else saved)})")
+            elif ss.get("key_remembered") and saved == "saved":
+                st.caption("✅ 이 브라우저에 저장하고 다시 읽어 확인했어요.")
             if ss.get("key_remembered"):
                 st.caption("🔑 이 브라우저에 키를 기억해 두었어요. 여러 사람이 쓰는 컴퓨터라면 지워 주세요.")
                 st.button("기억한 키 지우기", on_click=_forget_browser_key, width="stretch", key="forget_browser_key")
