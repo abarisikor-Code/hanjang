@@ -111,7 +111,8 @@ _key_store = st.components.v2.component("hanjang_key_store", js=_KEY_STORE_JS)
 
 
 def _browser_key_sync() -> None:
-    """인터넷판 사이드바 맨 위(키 입력칸보다 먼저): 저장·삭제 요청을 넘기고, 저장된 키를 받으면 입력칸에 채운다."""
+    """인터넷판: 저장·삭제 요청을 넘기고, 저장된 키를 받으면 입력칸에 채운다. 사이드바 밖(본문 맨 위, 보이지 않게)에 둔다 —
+    사이드바가 접혀 있으면 그 안의 것은 펼칠 때까지 돌지 않는다. 키 입력칸보다 먼저 불러야 칸에 채울 수 있다."""
     op = ss.pop("key_op", None)
     data = {}
     if op:
@@ -128,15 +129,17 @@ def _browser_key_sync() -> None:
         if ss.key_saved.startswith("savefail"):
             ss.key_remembered = False  # 저장이 안 됐으면 '기억해 두었어요'라고 하지 않는다 (체크칸도 다시 꺼진다)
     stored = getattr(res, "stored", None)
-    if isinstance(stored, str) and _KEY_SHAPE.fullmatch(stored) and not ss.get("key_loaded"):
-        ss.key_loaded = True  # 접속할 때 한 번만 (사용자가 칸을 비운 뒤에 다시 채우지 않게)
+    # 키 칸이 비어 있으면 저장된 키를 채운다 — 한 번만이 아니라 언제든(새로 고침 뒤 앞 세션을 이어 쓰는 경우에도).
+    # 사용자가 '기억한 키 지우기'를 눌렀으면 채우지 않는다.
+    if isinstance(stored, str) and _KEY_SHAPE.fullmatch(stored) and not ss.get("key_forgot"):
         ss.key_remembered = True
-        if not ss.get("w_api_key"):
+        if not str(ss.get("w_api_key") or "").strip():
             ss.w_api_key = stored
 
 
 def _key_memory_changed() -> None:
     ss.key_remembered = bool(ss.get("w_key_mem"))
+    ss.key_forgot = not ss.key_remembered
     key = str(ss.get("w_api_key") or "").strip()
     ss.key_op = ("save", key) if ss.key_remembered and key else ("forget", "")
 
@@ -145,9 +148,12 @@ def _key_typed() -> None:
     if ss.get("key_remembered"):  # 기억해 둔 상태에서 키를 바꾸면 저장한 키도 바꾼다
         key = str(ss.get("w_api_key") or "").strip()
         ss.key_op = ("save", key) if key else ("forget", "")
+        if not key:  # 칸을 직접 비우면 기억한 키도 지운 것으로 (다시 채우지 않게)
+            ss.key_forgot, ss.key_remembered = True, False
 
 
 def _forget_browser_key() -> None:
+    ss.key_forgot = True
     ss.key_remembered = False
     ss.w_key_mem = False
     ss.w_api_key = ""
@@ -301,6 +307,12 @@ def _focus(bid: str) -> None:
     ss.open_id = bid
 
 
+# 키: 이 컴퓨터(.env, LOCAL) 또는 이 브라우저에 기억해 둔 것. 사이드바의 키 입력칸보다 먼저.
+if "w_api_key" not in ss:
+    ss.w_api_key = os.getenv("GEMINI_API_KEY", "").strip() if LOCAL else ""  # 인터넷판은 서버 키를 절대 쓰지 않는다
+if not LOCAL:
+    _browser_key_sync()
+
 # =====================================================================
 # 사이드바: 처음으로 · 설정 (자주 안 쓰는 것은 접어 둔다)
 # =====================================================================
@@ -312,10 +324,6 @@ with st.sidebar:
         st.button("✏️ 만들던 학습지로", width="stretch", on_click=go, args=("result",))
     st.divider()
     env_key = os.getenv("GEMINI_API_KEY", "").strip() if LOCAL else ""  # 인터넷판은 서버 키를 절대 쓰지 않는다
-    if "w_api_key" not in ss:
-        ss.w_api_key = env_key
-    if not LOCAL:
-        _browser_key_sync()  # 이 브라우저에 기억해 둔 키 (입력칸을 그리기 전에)
     with st.expander("⚙️ 설정", expanded=not ss.w_api_key):
         api_key = st.text_input(
             "Gemini API 키", type="password", key="w_api_key", on_change=_key_typed,
