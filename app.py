@@ -333,7 +333,7 @@ if not LOCAL:
 # 사이드바: 처음으로 · 설정 (자주 안 쓰는 것은 접어 둔다)
 # =====================================================================
 with st.sidebar:
-    st.markdown("## 📝 한장" + (f" :gray-badge[v{APP_VERSION}]" if APP_VERSION else ""))
+    st.markdown("## 📝 한장" + (f" :gray-badge[v{APP_VERSION}]" if APP_VERSION else "") + " :small[:gray[(made by 백)]]")
     st.caption("누구나 쉽게 만드는 A4 학습지")
     st.button("🏠 처음 화면으로", width="stretch", on_click=go, args=("home",))
     if ss.ws["blocks"] and ss.page != "result":
