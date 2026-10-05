@@ -65,6 +65,7 @@ def make_icon(path: Path) -> None:
 def copy_app(dst: Path) -> None:
     dst.mkdir(parents=True)
     shutil.copy2(ROOT / "app.py", dst / "app.py")
+    shutil.copy2(ROOT / "CHANGELOG.md", dst / "CHANGELOG.md")  # 사이드바 버전 표시(app.APP_VERSION)가 읽는다
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     shutil.copytree(ROOT / "worksheet_maker", dst / "worksheet_maker", ignore=ignore)
     shutil.copytree(ROOT / "data", dst / "data", ignore=ignore)
