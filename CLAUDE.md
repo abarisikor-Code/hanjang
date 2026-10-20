@@ -3,7 +3,7 @@
 교사가 자료를 넣거나 직접 편집하면 **항상 같은 규격의 A4 HTML 학습지**가 나오는 Streamlit 앱.
 
 ## 핵심 원칙 (절대 깨지 말 것)
-- **AI는 구조와 선택만, 코드는 모양만.** Gemini는 `Worksheet` JSON과 `Theme` 선택지 값만 반환한다.
+- **AI는 구조와 선택만, 코드는 모양만.** Gemini는 `Worksheet` JSON·활동 설계 JSON과 `Theme` 선택지 값만 반환한다.
   AI가 HTML/CSS/색상/크기 값을 만들게 하지 않는다. 참고 학습지의 스타일도 `THEME_OPTIONS` 안에서 고르게 한다.
 - 디자인 규칙은 `worksheet_maker/templates/worksheet.css` 한 곳에 둔다. 값은 CSS 변수(학년 `--base` 등 — 초등 1~2 lower / 3~4 elementary / 5~6 upper, 예전 middle·high는 upper로, 테마 `--b1~4` 등),
   모양 차이는 `<body>`의 `hd-* sec-* qn-* tag-*` 클래스로만 만든다.
@@ -77,6 +77,19 @@
   응답 스키마에서 내용·정답 칸(title, body, items, answer, solution)은 필수여야 한다 — 선택이면 lite 모델이 통째로 비운다.
 - 단일과목형(`app.single_wizard`) → `llm.generate_for_standards`: 성취기준(+해설)으로 새 학습지를 만들고 모든 문항에
   `answer`·`solution`을 채운다. 정답 쪽은 `render(show_answers=True)` → 새 쪽(`.answer-sheet`). 빈칸 채우기 정답은 `[[ ]]`에서 뽑는다.
+- 관심사·주제: `llm._interest_rule`을 단일과목·융합·머리말에서 새로 만들기 프롬프트에 함께 넣는다.
+  좋아하는 대상의 이름만 바꾸지 않고, 그 관심사 안의 목적·자료·비교·선택에 배울 내용이 쓰이게 한다.
+  학년·난이도·학습지 유형이 우선이며, 반복 연습·과목별 나누기 형식은 유지한다. 원본 자료를 옮기는 분석에는 넣지 않는다.
+  기본 유형에 요청이 있으면 `llm._generate_for_request` → `activity.build_prompt`로 짧은 활동 설계만 따로 받는다.
+  기본 모델을 고른 경우 설계는 3.8-flash → 3.6-flash 순으로 대체하며, 다른 모델을 직접 골랐으면 그 모델부터 쓴다.
+  두 설계 모델이 모두 실패하면 안내하고 멈춘다. lite로 자동 대체해 활동 품질을 떨어뜨리지 않는다.
+  `activity.to_worksheet`가 자료·질문·정답을 다시 쓰지 않고 기존 reading·table·문항 블록으로 옮긴다(내용 재작성 AI 호출 없음).
+  문항 수·비교/선택/완성 활동 수·마지막 완성 활동·선택지/정답·빈 칸을 검사하고, 구조가 맞지 않으면 다음 모델로 대체한다.
+  이 검사는 활동의 의미까지 보증하지 않으므로 실제 문항은 따로 읽는다. 관심사가 없다고 판단하면 원래 생성 경로로 간다.
+  추가 요청 없는 학습지와 시험·반복 연습·노트·탐구·빙고 유형, 과목별로 나누기는 기존 생성 경로를 유지한다.
+  새 의미 구조는 `worksheet_maker/activity.py`에 모으며 HTML·CSS·외부 그림은 만들지 않는다.
+  `understand_request.extra`는 관심사와 원하는 활동을 축약해 버리지 않고 보존한다.
+  외부 호출 없는 전달 검사는 `python -m unittest discover -s tests -v`. 실제 생성 품질 검사는 별도로 여러 학년의 문항·정답을 읽는다.
 - `worksheet_maker/diagrams.py` — 도식(diagram 블록). AI는 `diagram_json`(문자열)으로 설계도만 주고 `Block`이 dict로 바꿔
   `normalize`로 범위를 바로잡는다. `render_svg`가 흑백 SVG를 그린다(글자는 escape). 새 도식은 `KINDS`·`_draw_<kind>` 추가.
 - Gemini 그림 모델은 쓰지 않는다(무료 키 한도 0, 결제 키 사용자 없음).
