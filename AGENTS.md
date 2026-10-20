@@ -31,6 +31,9 @@
   안에 `.env`가 없어야 한다. 윈도우 .bat은 CP949로 쓴다(UTF-8이면 한글 줄에서 명령이 잘린다).
 
 ## 새 컴퓨터 준비 (윈도우)
+**'한장_옮기기' 폴더로 옮겨 온 경우**: 그 안의 `hanjang` 폴더가 이미 저장소(.git·.env 포함)다. 2·3·5를 건너뛰고,
+`git status`·`git pull`로 GitHub와 맞춘 뒤 4(.venv 만들기)부터 한다. `.venv`는 컴퓨터마다 새로 만든다(옮기지 않는다).
+
 1. Git, Python 3.12(설치 때 'Add python.exe to PATH' 체크)를 설치한다.
 2. `git clone https://github.com/abarisikor-Code/hanjang.git` → `cd hanjang` → `git checkout dev`
 3. 커밋 작성자(이 저장소만): `git config user.name abarisikor-Code`, `git config user.email 326764217+abarisikor-Code@users.noreply.github.com`
