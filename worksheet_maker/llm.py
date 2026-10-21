@@ -438,6 +438,7 @@ def _interest_rule(request: str) -> str:
   저학년·기초는 한 문항에 한 가지 짧은 행동만 요구한다. 연습 문제지는 짧은 반복 연습을 유지하고 생활 문제에서 관심사를 살린다.
   시험지·노트·빙고도 정해진 구성요소를 유지한다. 과목별로 나누기를 골랐다면 과목 사이를 억지로 엮지 않는다.
 - 문제를 풀 자료와 조건은 학습지 안에 모두 준다. 인터넷 검색·별도 준비물·실제 방문이 있어야만 풀리는 과제는 만들지 않는다.
+  원화 가격은 정수 원으로 쓰고, 소수는 kg·L·m처럼 자연스러운 측정량으로 다룬다. 소수 연습 때문에 3.50원 같은 가격을 만들지 않는다.
   가상 수량·기록은 '활동을 위해 만든 자료'라고 짧게 밝히고, 동물의 먹이량·행성 거리 같은 실제 사실인 척 쓰지 않는다.
   직접 지은 읽기 글의 source는 '학습용 창작 글'로 쓰며 실제 소식지·신문에서 가져온 것처럼 꾸미지 않는다.
   선택·설계처럼 답이 여럿인 문항은 answer에 가능한 예시 답, solution에 충족해야 할 조건과 확인 방법을 쓴다.
@@ -445,20 +446,25 @@ def _interest_rule(request: str) -> str:
 
 
 def _generate_for_request(client, model: str, prompt: str, *, request: str, context: str,
-                          n_questions: int, kind: str = "standard", plan_activity: bool = True) -> tuple[str, str]:
-    """기본 학습지의 관심사 활동은 별도로 설계하고 코드가 그대로 옮긴다."""
-    if plan_activity and kind == "standard" and request.strip():
+                          n_questions: int, kind: str = "standard", plan_activity: bool = True,
+                          force_context: bool = False) -> tuple[str, str]:
+    """관심사·융합·탐구의 상황과 문항을 함께 설계하고 코드가 그대로 옮긴다."""
+    force_context = force_context or kind == "inquiry"
+    if plan_activity and kind in {"standard", "test", "inquiry"} and (request.strip() or force_context):
         from . import activity
 
         _notify("좋아하는 주제와 배울 내용을 엮어 활동을 설계하는 중…")
         preferred = "gemini-3.8-flash" if model == MODELS[0] else model
         order = list(dict.fromkeys([preferred, "gemini-3.6-flash", "gemini-3.8-flash"]))
-        plan_prompt = activity.build_prompt(context=context, request=request, n_questions=n_questions)
+        plan_prompt = activity.build_prompt(context=context, request=request, n_questions=n_questions,
+                                            kind=kind, force_context=force_context)
 
         def design(chosen_model):
             raw = _generate(client, chosen_model, plan_prompt, [], activity.response_schema())
             try:
-                ws = activity.to_worksheet(_parse_json(raw), n_questions)
+                ws = activity.to_worksheet(_parse_json(raw), n_questions, kind=kind)
+                if ws is None and force_context:
+                    raise ValueError("융합·탐구 학습지의 공동 상황이 없습니다.")
             except (ValueError, TypeError, ValidationError) as exc:
                 raise _BrokenOutput("활동 설계를 학습지로 옮기지 못했습니다.") from exc
             return ws
@@ -727,7 +733,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
                 f"{task_name}: {task_rule}\n"
                 + chr(10).join(curriculum.limits(grade, subj, picks[subj]) for subj in subjects)
                 + f"\n{fraction_rule(grade)}\n각 문항 body 앞에 [수학], [국어]처럼 사용하는 과목을 표시한다.",
-        n_questions=n_questions, kind=kind, plan_activity=not separate)
+        n_questions=n_questions, kind=kind, plan_activity=not separate, force_context=not separate)
     data = _parse_json(raw)
     data = data.get("worksheet", data) if isinstance(data, dict) else data
     try:

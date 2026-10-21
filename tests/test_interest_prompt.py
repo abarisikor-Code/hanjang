@@ -86,7 +86,7 @@ class InterestPromptTests(unittest.TestCase):
                 self.assertNotIn('interest_plan', result.worksheet.model_dump())
 
     def test_no_request_and_other_kinds_keep_original_generator(self):
-        for request, kind in [('', 'standard'), ('공룡을 좋아해', 'drill'), ('공룡을 좋아해', 'test')]:
+        for request, kind in [('', 'standard'), ('공룡을 좋아해', 'drill'), ('공룡을 좋아해', 'note'), ('공룡을 좋아해', 'game')]:
             with self.subTest(kind=kind), patch.object(llm, '_generate_with_retry', return_value=('원래 응답', '기존 모델')) as old, patch.object(llm, '_generate') as direct:
                 result = llm._generate_for_request(None, llm.MODELS[0], '기존 지시', request=request,
                     context='학년 범위', n_questions=4, kind=kind)

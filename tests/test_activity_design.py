@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from worksheet_maker import activity, llm
+from worksheet_maker.schema import Worksheet, Block, QUESTION_TYPES
 
 
 def sample_plan():
@@ -26,6 +27,83 @@ def sample_plan():
 
 
 class ActivityDesignTests(unittest.TestCase):
+    def test_inquiry_questions_are_the_activity_not_a_detached_appendix(self):
+        plan = sample_plan()
+        plan['questions'][0]['stage'] = '대안 비교'
+        plan['questions'][1]['stage'] = '결과 정리'
+        ws = activity.to_worksheet(plan, 2, kind='inquiry')
+        self.assertEqual(ws.kind, 'inquiry')
+        self.assertEqual([b.title for b in ws.blocks if b.type == 'section'], ['대안 비교', '결과 정리'])
+        self.assertEqual(sum(b.type in QUESTION_TYPES for b in ws.blocks), 2)
+        self.assertEqual(ws.blocks[-1].type, 'reflection')
+
+    def test_contextual_test_keeps_exam_layout(self):
+        plan = sample_plan()
+        plan['questions'][-1]['action'] = '이유 설명'
+        ws = activity.to_worksheet(plan, 2, kind='test')
+        self.assertEqual(ws.kind, 'test')
+        self.assertEqual(ws.goals, [])
+        self.assertFalse(any(b.type in {'text', 'section', 'activity', 'reflection'} for b in ws.blocks))
+        self.assertEqual(sum(b.type == 'reading' for b in ws.blocks), 1)
+
+    def test_ox_answer_combinations_are_replaced_with_the_actual_statements(self):
+        plan = sample_plan()
+        plan['questions'][0].update(type='ox', body='설명을 확인해 보세요.\n(1) 표의 단위를 확인합니다.\n(2) 조건은 읽지 않아도 됩니다.',
+            items=['(1) O (2) X', '(1) X (2) O'], answer='(1) O (2) X')
+        ws = llm._postprocess(activity.to_worksheet(plan, 2, kind='inquiry'), 4)
+        block = next(b for b in ws.blocks if b.type == 'ox')
+        self.assertEqual(block.items, ['표의 단위를 확인합니다.', '조건은 읽지 않아도 됩니다.'])
+        self.assertEqual(block.answer, '(1) O (2) X')
+
+    def test_fractional_won_is_rejected_but_subunits_are_allowed(self):
+        for rows in [[['물품', '가격'], ['동화책', '3.50원']], [['물품', '가격(원)'], ['동화책', '3.50']]]:
+            plan = sample_plan()
+            plan['materials'][0]['rows'] = rows
+            with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, '원 단위'):
+                activity.to_worksheet(plan, 2)
+        plan = sample_plan()
+        plan['materials'][0]['rows'] = [['이름', '무게(kg)', '가격'], ['기부물품', '3.50', '3.50만원']]
+        self.assertIsNotNone(activity.to_worksheet(plan, 2))
+        for unit in ('천원', '천 원', '만 원'):
+            plan['materials'][0]['rows'] = [['물품', f'가격({unit})'], ['동화책', '3.50']]
+            with self.subTest(unit=unit):
+                self.assertIsNotNone(activity.to_worksheet(plan, 2))
+
+    def test_detached_calculation_appendix_is_flagged(self):
+        ws = Worksheet(title='가상 장터', blocks=[
+            Block(type='short_answer', body=f'[수학] {n}/8 + 1/8을 계산하면 얼마인가요?', answer='값', solution='풀이') for n in (1, 2, 3, 4)
+        ])
+        self.assertTrue(any('단순 계산' in s for s in activity.context_issues(ws)))
+
+    def test_price_column_cannot_contain_a_fraction_of_food(self):
+        ws = Worksheet(title='가상 장터', blocks=[Block(type='table', rows=[['물품', '가격'], ['간식', '2/6판']])])
+        self.assertTrue(any('가격 열' in s for s in activity.context_issues(ws)))
+
+    def test_repeated_formula_choice_then_calculation_pairs_are_flagged(self):
+        questions = []
+        for expression, answer in [('12 × 14', '168'), ('144 ÷ 12', '12')]:
+            questions += [Block(type='multiple_choice', body='이 상황에 맞는 식을 골라 보세요.', answer='③ '+expression),
+                          Block(type='short_answer', body=expression+'의 계산 결과로 알맞은 것을 골라 보세요.', answer=answer)]
+        questions += [Block(type='essay', body='자료의 조건을 바탕으로 계획을 비교해 보세요.', answer='예시', solution='기준') for _ in range(6)]
+        ws = Worksheet(title='가상 평가', blocks=questions)
+        self.assertTrue(any('문항 쌍' in s for s in activity.context_issues(ws)))
+
+    def test_test_and_inquiry_enter_design_path(self):
+        for kind, request in [('test', '호랑이를 좋아해'), ('inquiry', '')]:
+            with self.subTest(kind=kind), patch.object(llm, '_generate', return_value=json.dumps(sample_plan())) as design, patch.object(llm, '_generate_with_retry') as old:
+                raw, _ = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request=request,
+                    context='4학년 수학과 사회', n_questions=2, kind=kind)
+            self.assertEqual(json.loads(raw)['kind'], kind)
+            design.assert_called_once()
+            old.assert_not_called()
+
+    def test_integrated_design_does_not_require_a_separate_interest_string(self):
+        with patch.object(llm, '_generate', return_value=json.dumps(sample_plan())) as design:
+            raw, _ = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request='',
+                context='4학년 수학과 사회', n_questions=2, force_context=True)
+        self.assertEqual(json.loads(raw)['title'], sample_plan()['title'])
+        self.assertIn('has_interest=true', design.call_args.args[2])
+
     def test_materials_questions_and_answers_survive_without_rewriting(self):
         plan = sample_plan()
         before = copy.deepcopy(plan)
