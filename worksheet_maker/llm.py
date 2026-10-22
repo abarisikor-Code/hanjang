@@ -27,7 +27,7 @@ MODEL_LABELS = {
     "gemini-3.6-flash": "보통 · gemini-3.6-flash",
 }
 THINKING = "high"  # 계산·사실 실수를 줄이려면 많이 생각하게 한다 (lite 기준 시간 차이는 수십 초 이내)
-REQUEST_TIMEOUT = 100  # 초. 성공은 보통 10~50초. 이보다 오래 걸리면 붐비는 것으로 보고 다음 모델로 넘어간다.
+REQUEST_TIMEOUT = 100  # 초. 통신 대기 제한이며, SDK 내부 재시도 때문에 모델 대체까지는 더 걸릴 수 있다.
 RETRY_WAITS: tuple[int, ...] = ()  # 같은 모델 재시도 없음: 붐빌 때는 거절까지 오래 걸려서 다른 모델이 빠르다
 
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
@@ -445,6 +445,17 @@ def _interest_rule(request: str) -> str:
 """
 
 
+def _generation_client(api_key: str):
+    """SDK의 추가 시도를 최소로 설정하고 모델 대체는 앱에서 관리한다."""
+    from google import genai
+    from google.genai import types
+
+    options = {"timeout": REQUEST_TIMEOUT * 1000}
+    if "retry_options" in types.HttpOptions.model_fields:
+        options["retry_options"] = {"attempts": 0}
+    return genai.Client(api_key=api_key.strip(), http_options=options)
+
+
 def _generate_for_request(client, model: str, prompt: str, *, request: str, context: str,
                           n_questions: int, kind: str = "standard", plan_activity: bool = True,
                           force_context: bool = False) -> tuple[str, str]:
@@ -459,18 +470,47 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
         plan_prompt = activity.build_prompt(context=context, request=request, n_questions=n_questions,
                                             kind=kind, force_context=force_context)
 
-        def design(chosen_model):
-            raw = _generate(client, chosen_model, plan_prompt, [], activity.response_schema())
+        def design(chosen_model, instruction=plan_prompt):
+            raw = _generate(client, chosen_model, instruction, [], activity.response_schema())
             try:
-                ws = activity.to_worksheet(_parse_json(raw), n_questions, kind=kind)
+                plan = _parse_json(raw)
+                ws = activity.to_worksheet(plan, n_questions, kind=kind)
                 if ws is None and force_context:
                     raise ValueError("융합·탐구 학습지의 공동 상황이 없습니다.")
-            except (ValueError, TypeError, ValidationError) as exc:
+            except (AnalyzeError, ValueError, TypeError, ValidationError) as exc:
                 raise _BrokenOutput("활동 설계를 학습지로 옮기지 못했습니다.") from exc
-            return ws
+            return plan, ws
+
+        def inspect(plan, preferred_model):
+            instruction = activity.review_prompt(plan, context=context, request=request,
+                                                 kind=kind, n_questions=n_questions)
+
+            def call(chosen_model):
+                _notify("수량이 실제 상황에 맞는지, 문제가 의미 있게 이어지는지 검토하는 중…")
+                raw = _generate(client, chosen_model, instruction, [], activity.review_schema())
+                try:
+                    return activity.parse_review(_parse_json(raw), n_questions)
+                except (AnalyzeError, ValueError, TypeError) as exc:
+                    raise _BrokenOutput("활동 내용 검토 결과를 읽지 못했습니다.") from exc
+
+            return _with_retry(list(dict.fromkeys([preferred_model, *order])), call)[0]
 
         try:
-            ws, used = _with_retry(order, design)
+            (plan, ws), used = _with_retry(order, design)
+            if ws is not None:
+                issues = inspect(plan, used)
+                for _ in range(2):  # 수정 중 새 오류가 생기면 한 번 더 고치되 무한 호출하지 않는다.
+                    if not issues:
+                        break
+                    _notify("검토에서 찾은 수량·문제 연결을 자료와 정답까지 함께 고치는 중…")
+                    instruction = activity.repair_prompt(plan_prompt, plan, issues)
+                    (plan, ws), used = _with_retry(list(dict.fromkeys([used, *order])),
+                                                 lambda chosen: design(chosen, instruction))
+                    if ws is None:
+                        raise AnalyzeError("수량이나 문제 연결을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
+                    issues = inspect(plan, used)
+                if issues:
+                    raise AnalyzeError("수량이나 문제 연결을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
         except AnalyzeError as exc:
             raise AnalyzeError(f"관심사를 엮는 활동 설계를 마치지 못했어요.\n{exc}") from exc
         if ws is not None:
@@ -550,7 +590,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 """
     from google import genai
 
-    client = genai.Client(api_key=api_key.strip())
+    client = _generation_client(api_key)
     raw, model_used = _generate_for_request(client, model, prompt, request=extra,
         context=f"초등 {grade}학년 {subject}. 난이도: {diff_name} — {diff_rule}\n단원: {unit_name}\n"
                 f"{std_lines}\n{MIX_RULES.get(mix, '') if len(standards) > 1 else ''}\n"
@@ -621,7 +661,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 """
     from google import genai
 
-    client = genai.Client(api_key=api_key.strip())
+    client = _generation_client(api_key)
     raw, model_used = _generate_for_request(client, model, prompt, request=chr(10).join([title, unit, *goals, extra]),
         context=f"대상: {level_label}. 난이도: {diff_name} — {diff_rule}\n과목: {subject}\n단원: {unit}\n목표:\n{goal_lines}",
         n_questions=n_questions)
@@ -727,7 +767,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 """
     from google import genai
 
-    client = genai.Client(api_key=api_key.strip())
+    client = _generation_client(api_key)
     raw, model_used = _generate_for_request(client, model, prompt, request=chr(10).join([theme, extra]),
         context=f"초등 {grade}학년. 난이도: {diff_name} — {diff_rule}\n{chr(10).join(blocks)}\n"
                 f"{task_name}: {task_rule}\n"

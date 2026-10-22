@@ -230,13 +230,27 @@ def repair_ox(b) -> bool:
     return (b.title, b.body, b.items, b.answer) != before
 
 
+def _strip_question_prefix(text: str) -> str:
+    match = _NUM_PREFIX.match(text)
+    if not match:
+        return text
+    prefix, rest = match.group(0).strip(), text[match.end():]
+    # '2번 문제에서', '문항 3의'는 자동 문항 번호가 아니라 질문 내용이다.
+    if re.match(r"(?:에서|에게|으로|까지|부터|처럼|보다|의|와|과|을|를|은|는|에|로)", rest):
+        return text
+    # '2번 묶음', '1번 수레' 등의 사물 이름도 보존한다. 명확한 번호 표지/식만 지운다.
+    if re.fullmatch(r"\d{1,2}\s*번", prefix) and not re.match(r"\d", rest):
+        return text
+    return rest
+
+
 def strip_numbers(ws: Worksheet) -> None:
     """AI가 문항 앞에 쓴 번호('1번 문항', '문제 3', '3.')를 지운다 — 번호는 render가 붙인다.
     O/X 진술문 끝에 붙은 정답('(O)')을 지우고, 정답 없는 안내 문장('~살펴보세요')은 문항이 아닌 설명 글로 바꾼다."""
     for b in ws.blocks:
         if b.type in QUESTION_TYPES:
-            b.body = _NUM_PREFIX.sub("", b.body, count=1)
-            b.title = _NUM_PREFIX.sub("", b.title, count=1)
+            b.body = _strip_question_prefix(b.body)
+            b.title = _strip_question_prefix(b.title)
         if b.type == "ox":  # '(1)' 같은 번호와 끝에 붙은 정답을 지운다 (정답 칸이 비었으면 그 표시를 정답으로 옮긴다)
             repair_ox(b)
             marks = [_OX_MARK.search(it) for it in b.items]

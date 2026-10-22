@@ -26,6 +26,12 @@ def sample_plan():
     }
 
 
+def passing_generation(plan=None):
+    def generate(client, model, prompt, files, schema):
+        return json.dumps({'issues': []} if 'issues' in schema['properties'] else plan or sample_plan())
+    return generate
+
+
 class ActivityDesignTests(unittest.TestCase):
     def test_inquiry_questions_are_the_activity_not_a_detached_appendix(self):
         plan = sample_plan()
@@ -90,19 +96,19 @@ class ActivityDesignTests(unittest.TestCase):
 
     def test_test_and_inquiry_enter_design_path(self):
         for kind, request in [('test', '호랑이를 좋아해'), ('inquiry', '')]:
-            with self.subTest(kind=kind), patch.object(llm, '_generate', return_value=json.dumps(sample_plan())) as design, patch.object(llm, '_generate_with_retry') as old:
+            with self.subTest(kind=kind), patch.object(llm, '_generate', side_effect=passing_generation()) as design, patch.object(llm, '_generate_with_retry') as old:
                 raw, _ = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request=request,
                     context='4학년 수학과 사회', n_questions=2, kind=kind)
             self.assertEqual(json.loads(raw)['kind'], kind)
-            design.assert_called_once()
+            self.assertEqual(design.call_count, 2)
             old.assert_not_called()
 
     def test_integrated_design_does_not_require_a_separate_interest_string(self):
-        with patch.object(llm, '_generate', return_value=json.dumps(sample_plan())) as design:
+        with patch.object(llm, '_generate', side_effect=passing_generation()) as design:
             raw, _ = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request='',
                 context='4학년 수학과 사회', n_questions=2, force_context=True)
         self.assertEqual(json.loads(raw)['title'], sample_plan()['title'])
-        self.assertIn('has_interest=true', design.call_args.args[2])
+        self.assertIn('has_interest=true', design.call_args_list[0].args[2])
 
     def test_materials_questions_and_answers_survive_without_rewriting(self):
         plan = sample_plan()
@@ -135,13 +141,14 @@ class ActivityDesignTests(unittest.TestCase):
         self.assertEqual(ws.blocks[-2].items, ['가', '나'])
         self.assertEqual(ws.blocks[-2].answer, '②')
 
-    def test_interest_plan_uses_one_model_call_and_keeps_result(self):
-        with patch.object(llm, '_generate', return_value=json.dumps(sample_plan())) as design, patch.object(llm, '_generate_with_retry') as old:
+    def test_passing_plan_is_reviewed_without_rewriting(self):
+        with patch.object(llm, '_generate', side_effect=passing_generation()) as design, patch.object(llm, '_generate_with_retry') as old:
             raw, used = llm._generate_for_request(None, llm.MODELS[0], '기존 지시',
                 request='공룡을 좋아해', context='3학년 곱셈', n_questions=2)
         self.assertEqual(used, 'gemini-3.8-flash')
         self.assertEqual(json.loads(raw)['blocks'][-1]['answer'], sample_plan()['questions'][-1]['answer'])
-        design.assert_called_once()
+        self.assertEqual(design.call_count, 2)
+        self.assertIn('issues', design.call_args_list[1].args[4]['properties'])
         old.assert_not_called()
 
     def test_non_interest_request_falls_back_to_original_generation(self):
@@ -153,7 +160,7 @@ class ActivityDesignTests(unittest.TestCase):
         old.assert_called_once()
 
     def test_selected_model_is_used_for_design(self):
-        with patch.object(llm, '_generate', return_value=json.dumps(sample_plan())) as design:
+        with patch.object(llm, '_generate', side_effect=passing_generation()) as design:
             _, used = llm._generate_for_request(None, 'gemini-3.6-flash', '기존 지시',
                 request='공룡을 좋아해', context='3학년 곱셈', n_questions=2)
         self.assertEqual(used, 'gemini-3.6-flash')

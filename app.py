@@ -1663,7 +1663,7 @@ def page_home() -> None:
     with c2.container(border=True):
         st.markdown("**처음이세요? 이렇게 하면 돼요**")
         st.markdown("1. 위에서 **📘 한 과목 학습지**를 누르세요  \n2. 학년·과목 → 배울 내용 → 모양을 차례로 고르세요  \n"
-                    "3. **✨ 학습지 만들기**를 누르고 20~30초 기다리면 끝!  \n4. **💾 저장**하고 **🖨 인쇄**하세요")
+                    "3. **✨ 학습지 만들기**를 누르세요. 주제를 엮고 내용을 검토하는 데 몇 분 걸릴 수 있어요.  \n4. **💾 저장**하고 **🖨 인쇄**하세요")
         if ss.ws["blocks"]:
             st.button(f"✏️ 만들던 학습지 계속하기 — '{ss.ws['title']}'", width="stretch", on_click=go, args=("result",))
 
