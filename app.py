@@ -46,7 +46,7 @@ from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx,
 from worksheet_maker.render import LEVELS, PER_PAGE, grade_level, level_key, render
 from worksheet_maker.saved import LoadError, unpack
 from worksheet_maker.schema import BLOCK_TYPES, IMAGE_SIZES, QUESTION_TYPES, Block, Worksheet
-from worksheet_maker.theme import THEME_OPTIONS, Theme, list_themes, save_theme
+from worksheet_maker.theme import THEME_OPTIONS, ACTIVE_PRESETS, PRESET_ORDER, Theme, exam_theme, list_themes, save_theme
 
 ENV_FILE = Path(__file__).parent / ".env"
 load_dotenv(ENV_FILE)
@@ -254,6 +254,8 @@ def current_worksheet() -> Worksheet:
 
 
 def current_theme() -> Theme:
+    if st.session_state.get("ws", {}).get("kind") == "test":
+        return exam_theme()
     return Theme.model_validate(st.session_state.theme)
 
 
@@ -306,7 +308,7 @@ def md(text: object) -> str:
 @contextmanager
 def ai_status(what: str):
     """AI 작업 중 진행 상황(어느 모델로 만드는 중인지, 모델을 바꿨는지)을 보여 준다."""
-    box = st.status(md(f"{what}… 보통 10~30초, 서버가 붐비면 2~3분까지 걸릴 수 있어요"))
+    box = st.status(md(f"{what}… 생성·검토·수정으로 몇 분 걸릴 수 있어요"))
     token = llm.progress.set(lambda msg: box.update(label=md(f"{what} — {msg}")))
     try:
         yield box
@@ -896,7 +898,7 @@ def _thumb(theme_json: str) -> str:
 @st.cache_data(show_spinner=False)
 def _kind_thumb(kind: str, theme_json: str) -> str:
     ws = Worksheet.model_validate({**kinds.SAMPLES[kind], "kind": kind})
-    return render(ws, level="elementary", theme=Theme.model_validate_json(theme_json), thumbnail=True)
+    return render(ws, level="elementary", theme=exam_theme() if kind == "test" else Theme.model_validate_json(theme_json), thumbnail=True)
 
 
 def _pick_kind(kind: str, apply_now: bool) -> None:
@@ -908,9 +910,12 @@ def _pick_kind(kind: str, apply_now: bool) -> None:
 def kind_gallery(cols_n: int = 3, height: int = 300, apply_now: bool = False) -> None:
     """학습지 유형 예시를 보여 주고 누르면 고른다. 유형마다 짜임새와 배치가 다르다."""
     cur = ss.ws.get("kind", "standard") if apply_now else ss.get("wkind", "standard")
+    if cur not in kinds.ACTIVE_KINDS:
+        st.caption("예전 학습지 유형은 그대로 열었어요. 새로 만들 때는 아래 네 가지 중에서 골라 주세요.")
     theme_json = current_theme().model_dump_json()
     cols = st.columns(cols_n)
-    for i, (k, (icon, name, desc)) in enumerate(kinds.KINDS.items()):
+    for i, k in enumerate(kinds.ACTIVE_KINDS):
+        icon, name, desc = kinds.KINDS[k]
         with cols[i % cols_n]:
             with st.container(border=True):
                 st.iframe(_kind_thumb(k, theme_json), height=height)
@@ -1297,9 +1302,13 @@ def _form_new_expander(form: forms.Form | None, saved: list[str]) -> None:
                 st.rerun()
 
 
-def theme_gallery(cols_n: int = 3, height: int = 330) -> None:
+def theme_gallery(cols_n: int = 3, height: int = 330, kind: str | None = None) -> None:
     """모양 예시를 보여 주고 누르면 바로 바뀐다 (지금 학습지에도 적용)."""
-    saved = list_themes()
+    if (kind or ss.ws.get("kind")) == "test":
+        st.info("배운 내용 확인은 시험지 모양 한 가지로 만들어요. 이름·점수 칸과 문항별 배점이 붙습니다.")
+        st.iframe(_kind_thumb("test", exam_theme().model_dump_json()), height=height)
+        return
+    saved = [t for t in list_themes() if t.name in ACTIVE_PRESETS or t.name not in PRESET_ORDER]
     cur = current_theme().name
     cols = st.columns(cols_n)
     for i, t in enumerate(saved):
@@ -1313,6 +1322,9 @@ def theme_gallery(cols_n: int = 3, height: int = 330) -> None:
 
 def style_editor() -> None:
     """모양 세부 조정·저장 (고급)."""
+    if ss.ws.get("kind") == "test":
+        st.caption("배운 내용 확인은 공통 시험지 모양을 사용해요. 글자 크기와 답 칸은 위에서 조절할 수 있어요.")
+        return
     t = ss.theme
     r = ss.theme_rev
     cols = st.columns(2)
@@ -1424,7 +1436,7 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
         form_panel()
     if ss.get("form"):
         st.caption("양식을 쓰는 동안 아래 모양은 문제 번호·소제목·글꼴 모양에만 쓰여요.")
-    theme_gallery()
+    theme_gallery(kind=kinds.for_generation(ss.get("wkind", "standard")))
     st.markdown("##### ⚙️ ③ 만들기 설정")
     question_count(prefix)
     with st.form(f"{prefix}_form"):
@@ -1443,7 +1455,8 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
         ) or "standard"
         n_questions = ss.n_questions
         answers = st.toggle("정답·해설 쪽도 함께 만들기 (학습지 뒤에 새 쪽으로)", value=ss.answers_on, key=f"{prefix}_ans")
-        review = st.toggle("🔍 다 만든 뒤 AI가 문항을 다시 풀어 보며 정답·학년 범위 검토 (20~40초 더 걸려요)",
+        st.caption("새 학습지는 유형별 구성과 수량·자료·정답을 자동으로 검토해요. 수정이 필요하면 몇 분 더 걸릴 수 있어요.")
+        review = st.toggle("🔍 완성 후 정답·학년 범위 한 번 더 검토하기 (추가 시간·사용량)",
                            value=ss.get("review_on", True), key=f"{prefix}_review",
                            help="계산 문제의 정답은 검토를 꺼도 프로그램이 늘 다시 계산해서 바로잡아요. "
                                 "검토를 켜면 문장으로 된 문제, 학년에 맞지 않는 내용, 답이 애매한 문제까지 AI가 한 번 더 살펴 고쳐요.")
@@ -1458,15 +1471,14 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
                              key=f"{prefix}_unit") if single else ""
         extra = st.text_input("더 바라는 점 (선택)", placeholder="예: 공룡을 좋아하는 아이예요. 문제에 공룡이 나오게 해 주세요.",
                               value=ss.get("nl", {}).get("extra", ""), key=f"{prefix}_extra")
-        st.caption("🖼 수학 그림(묶음·수직선·분수·시계·그래프)과 🧸 그림 카드(아이콘 그림)는 필요한 곳에 자동으로 들어가요. "
-                   "삽화가 더 필요하면 완성한 뒤 '그림' 칸을 넣고 🔎 그림 찾기나 🎨 AI 그리기를 쓰세요.")
+        st.caption("수학 도식과 아이콘 그림 카드는 필요한 곳에 들어가요. 직접 가진 그림은 완성한 뒤 넣을 수 있어요.")
         st.write("")
         submitted = st.form_submit_button(button_label, type="primary", width="stretch")
     if not submitted:
         return None
     ss.answers_on = answers
     ss.review_on = review
-    return {"wkind": ss.get("wkind", "standard"), "review": review,
+    return {"wkind": kinds.for_generation(ss.get("wkind", "standard")), "review": review,
             "difficulty": difficulty, "n_questions": n_questions, "mix": mix, "unit": unit, "extra": extra,
             "task_type": task_type, "theme_text": theme_text}
 
@@ -1582,7 +1594,7 @@ def _apply_request(text: str) -> None:
         ss.pop(key, None)  # 학년·과목 버튼이 새 값으로 다시 그려지게
     ss.grade = grade
     extra = str(d.get("extra") or "").strip()
-    wkind = d.get("kind") if d.get("kind") in kinds.KINDS else "standard"
+    wkind = kinds.for_generation(d.get("kind"))
     ss.wkind = wkind
     if len(subjects) == 1:
         subj = subjects[0]

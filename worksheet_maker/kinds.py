@@ -8,30 +8,45 @@ from __future__ import annotations
 
 # 유형 → (아이콘, 이름, 사용자에게 보여 줄 설명)
 KINDS: dict[str, tuple[str, str, str]] = {
-    "standard": ("📘", "기본 학습지", "개념 정리 → 문제 → 스스로 점검. 한 차시를 고르게 담아요."),
-    "test": ("📝", "단원평가지", "2단 시험지. 점수 칸과 문항별 배점이 붙고, 선택형·단답형 위주로 실력을 확인해요."),
-    "drill": ("🧮", "연습 문제지", "짧은 문제를 칸에 촘촘히 담아 반복 연습해요. 연산·낱말·맞춤법 연습에 좋아요."),
+    "standard": ("📘", "개념 익히기", "짧은 설명·예시 → 직접 풀기 → 다른 상황에 적용하기. 처음 배우는 내용을 이해해요."),
+    "test": ("📝", "배운 내용 확인", "개념 이해 → 적용 → 이유 설명. 힌트 없이 실력을 확인하는 한 가지 시험지 모양이에요."),
+    "drill": ("🧮", "반복 연습", "한 가지 기능을 짧은 문제로 충분히 연습해요. 연산·낱말·맞춤법을 익힐 때 골라요."),
     "note": ("🗂", "개념 정리 노트", "왼쪽 핵심어, 오른쪽 빈칸 설명의 코넬 노트. 배운 내용을 스스로 정리해요."),
-    "inquiry": ("🔍", "탐구·활동지", "질문 → 예상 → 관찰·기록표 → 결론. 큰 활동 칸과 기록표가 중심이에요."),
+    "inquiry": ("🔍", "문제 해결 탐구", "상황·자료 파악 → 비교·판단 → 선택·계획·설명. 배운 내용으로 해결안을 완성해요."),
     "game": ("🎲", "놀이 학습지", "문제를 풀고 빙고판에서 정답을 찾아 색칠해요. 저학년·복습에 좋아요."),
 }
 
+# 예전 저장 파일의 note/game은 계속 읽되 새 만들기에서는 네 가지만 고른다.
+ACTIVE_KINDS = ("standard", "inquiry", "test", "drill")
+
+
+def for_generation(kind: str) -> str:
+    return {"note": "standard", "game": "drill"}.get(kind, kind if kind in ACTIVE_KINDS else "standard")
+
 # AI에게 주는 짜임새 규칙. {n}은 문항 수.
 RULES: dict[str, str] = {
-    "standard": "- 순서: section(소제목) → concept(핵심 개념 정리) 또는 짧은 text/reading → 문항들 → 마지막에 reflection(스스로 점검 3개).",
+    "standard": (
+        "- 개념을 이해하는 학습지다. 짧은 concept(핵심 설명)과 풀이 예시 → 직접 풀기 → 다른 상황에 적용하기 → reflection 순서.\n"
+        "- 문항은 꼭 {n}개. 앞부분은 설명을 적용하는 기초 문제, 뒷부분은 조건이 달라진 적용·이유 설명 문제로 구성한다. "
+        "설명이나 풀이 예시를 문항 수에 포함하지 않는다. 예시와 똑같은 수·문장으로 정답을 노출하지 않는다.\n"
+        "- 관심사는 설명과 적용 문제의 자연스러운 맥락으로 활용하되, 탐구 프로젝트나 개념 빈칸 노트로 바꾸지 않는다."
+    ),
     "test": (
-        "- 단원평가 시험지다. section·concept·text·activity·reflection·goals는 쓰지 않는다"
+        "- 도움 없이 배운 내용을 확인하는 시험지다. section·concept·text·activity·reflection·goals는 쓰지 않는다"
         "(문제를 푸는 데 꼭 필요한 읽기 자료만 reading 1개까지, 도식은 문항에 필요한 것만).\n"
         "- 문항만 꼭 {n}개: 선택형 약 절반, 단답형·빈칸 채우기 약 1/3, 서술형 1~2개는 맨 뒤. 쉬운 문항 → 어려운 문항 순서.\n"
         "- 배점과 점수 칸은 프로그램이 붙인다. 문항에 점수를 쓰지 않는다."
+        " 각 문항은 독립적으로 풀 수 있게 한다. 개념 이해·적용·이유 설명을 고르게 확인하고, "
+        "앞 문항의 답이 뒤 문항이나 보기에 드러나지 않게 한다. 관심사가 있어도 모두 하나의 연속 탐구 과제로 만들지 않는다."
     ),
     "drill": (
-        "- 반복 연습지다. drill(연습 문제 묶음) {blocks}개가 중심이고, 묶음마다 문제 {per}개씩(모두 합해 {n2}개). 개수를 꼭 지킨다.\n"
-        "- drill마다 title에 지시문(예: '계산해 보세요', '알맞은 낱말을 써 보세요'), items에 짧은 문제를 꼭 8개 이상(8~16개). "
+        "- 반복 연습지다. drill(연습 문제 묶음) {blocks}개에 짧은 문제를 고르게 나누어 모두 합해 꼭 {n}개를 담는다. 개수를 꼭 지킨다. "
+        "같은 기능의 반복은 이 유형의 목적이며, 모든 문항에 이야기·비교·계획을 억지로 붙이지 않는다.\n"
+        "- drill마다 title에 지시문(예: '계산해 보세요', '알맞은 낱말을 써 보세요'), items에 짧은 문제를 담는다. "
         "각 문제의 정답 자리는 [[정답]]으로 표시한다(예: '37 + 48 = [[85]]', '(되/돼)요 → [[돼]]요').\n"
         "- drill마다 쉬운 문제 → 어려운 문제 순서. 같은 문제를 되풀이하지 않는다. 맨 앞에 풀이 요령을 concept 1개로 짧게 둘 수 있다.\n"
         "- 계산 정답은 하나하나 다시 계산해 확인한다.\n"
-        "- 마지막에 생활 속 문제 short_answer 1~2개. section·reading·activity·reflection은 쓰지 않는다."
+        "- 고른 기능 안에서 받아올림 유무·빈칸 위치 등 조건을 조금씩 바꾼다. 별도 생활 문제를 덧붙이지 않는다. section·reading·activity·reflection은 쓰지 않는다."
     ),
     "note": (
         "- 개념 정리 노트(코넬식)다. cornell(정리 노트) 2~4개가 중심: title에 소주제, items는 '핵심어: 설명' 형식으로 3~6개.\n"
@@ -61,10 +76,8 @@ RULES: dict[str, str] = {
 
 
 def rule(kind: str, n_questions: int) -> str:
-    total = max(16, n_questions * 2)  # 연습 문제지: 문항 수의 두 배를 짧은 문제로
-    blocks = max(2, -(-total // 10))  # 묶음 하나에 10개 안팎
-    per = -(-total // blocks)
-    return RULES.get(kind, RULES["standard"]).format(n=n_questions, n2=blocks * per, blocks=blocks, per=per)
+    blocks = max(1, -(-n_questions // 10))  # 실제 연습 문항을 한 묶음에 10개 안팎
+    return RULES.get(kind, RULES["standard"]).format(n=n_questions, blocks=blocks)
 
 
 def label(kind: str) -> str:
@@ -78,9 +91,11 @@ SAMPLES: dict[str, dict] = {
     "standard": {**_COMMON, "title": "받아올림이 있는 덧셈", "goals": ["받아올림이 있는 세 자리 수의 덧셈을 할 수 있다."], "blocks": [
         {"type": "section", "title": "개념 익히기"},
         {"type": "concept", "items": ["받아올림: 같은 자리 수의 합이 10이 넘으면 윗자리로 1을 올려요."]},
+        {"type": "text", "title": "풀이 예시", "body": "128 + 145: 일의 자리 8 + 5 = 13에서 1을 올려요. 십의 자리는 2 + 4 + 1 = 7, 백의 자리는 1 + 1 = 2이므로 273이에요."},
         {"type": "section", "title": "문제 풀기"},
         {"type": "short_answer", "body": "457 + 368을 계산해 보세요."},
         {"type": "multiple_choice", "body": "계산 결과가 가장 큰 것은?", "items": ["245 + 318", "199 + 402", "376 + 125"]},
+        {"type": "short_answer", "body": "학교 도서관에 동화책 245권과 새로 들어온 128권이 있어요. 400권을 놓는 책장에 모두 담을 수 있을까요? 계산해서 설명해 보세요."},
         {"type": "reflection", "items": ["받아올림을 바르게 표시했어요.", "자리를 맞추어 계산했어요."]},
     ]},
     "test": {**_COMMON, "title": "1단원 단원평가", "blocks": [
@@ -109,12 +124,15 @@ SAMPLES: dict[str, dict] = {
             "받아내림: 뺄 수 없으면 윗자리에서 [[10]]을 빌려와요.", "확인: 차 + 빼는 수 = [[빼어지는 수]]"]},
         {"type": "essay", "body": "오늘 배운 내용을 한두 문장으로 정리해 보세요.", "lines": 2},
     ]},
-    "inquiry": {**_COMMON, "title": "우리 반 저금통 조사", "blocks": [
-        {"type": "section", "title": "탐구 질문: 우리 모둠은 일주일에 얼마를 모을까?"},
-        {"type": "activity", "title": "예상하기", "body": "모둠 친구들이 모을 돈을 어림해 보세요."},
-        {"type": "activity", "title": "조사하기", "items": ["요일별로 모은 돈을 적어요.", "모두 더해요."]},
-        {"type": "table", "title": "기록표", "rows": [["요일", "모은 돈(원)", "누적(원)"], ["월", "", ""], ["화", "", ""], ["수", "", ""]]},
-        {"type": "essay", "body": "조사해서 알게 된 점을 써 보세요.", "lines": 2},
+    "inquiry": {**_COMMON, "title": "책 나눔 행사 준비하기", "blocks": [
+        {"type": "reading", "body": "활동을 위해 만든 자료예요. 도서관 준비팀이 되어 모인 책을 모두 담을 책장을 골라 안내문을 완성해 보세요."},
+        {"type": "table", "title": "준비 자료", "rows": [["구분", "수량"], ["지난주 모은 책", "245권"], ["이번 주 모은 책", "128권"], ["작은 책장", "350권까지"], ["큰 책장", "400권까지"]]},
+        {"type": "section", "title": "자료 파악"},
+        {"type": "short_answer", "body": "모인 책은 모두 몇 권인가요?"},
+        {"type": "section", "title": "비교·판단"},
+        {"type": "essay", "body": "책을 모두 담을 책장을 고르고 계산한 수를 근거로 설명해 보세요.", "lines": 2},
+        {"type": "section", "title": "결과물 완성"},
+        {"type": "essay", "body": "책의 수와 고른 책장을 넣어 행사 준비 안내문을 완성해 보세요.", "lines": 2},
     ]},
     "game": {**_COMMON, "title": "덧셈 빙고 놀이", "blocks": [
         {"type": "text", "body": "문제를 풀고 빙고판에서 정답을 찾아 색칠해요. 한 줄을 완성하면 빙고!"},

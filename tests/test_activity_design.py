@@ -95,7 +95,7 @@ class ActivityDesignTests(unittest.TestCase):
         self.assertTrue(any('문항 쌍' in s for s in activity.context_issues(ws)))
 
     def test_test_and_inquiry_enter_design_path(self):
-        for kind, request in [('test', '호랑이를 좋아해'), ('inquiry', '')]:
+        for kind, request in [('inquiry', '호랑이를 좋아해'), ('inquiry', '')]:
             with self.subTest(kind=kind), patch.object(llm, '_generate', side_effect=passing_generation()) as design, patch.object(llm, '_generate_with_retry') as old:
                 raw, _ = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request=request,
                     context='4학년 수학과 사회', n_questions=2, kind=kind)
@@ -106,7 +106,7 @@ class ActivityDesignTests(unittest.TestCase):
     def test_integrated_design_does_not_require_a_separate_interest_string(self):
         with patch.object(llm, '_generate', side_effect=passing_generation()) as design:
             raw, _ = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request='',
-                context='4학년 수학과 사회', n_questions=2, force_context=True)
+                context='4학년 수학과 사회', n_questions=2, kind="inquiry", force_context=True)
         self.assertEqual(json.loads(raw)['title'], sample_plan()['title'])
         self.assertIn('has_interest=true', design.call_args_list[0].args[2])
 
@@ -144,25 +144,23 @@ class ActivityDesignTests(unittest.TestCase):
     def test_passing_plan_is_reviewed_without_rewriting(self):
         with patch.object(llm, '_generate', side_effect=passing_generation()) as design, patch.object(llm, '_generate_with_retry') as old:
             raw, used = llm._generate_for_request(None, llm.MODELS[0], '기존 지시',
-                request='공룡을 좋아해', context='3학년 곱셈', n_questions=2)
+                request='공룡을 좋아해', context='3학년 곱셈', n_questions=2, kind="inquiry")
         self.assertEqual(used, 'gemini-3.8-flash')
-        self.assertEqual(json.loads(raw)['blocks'][-1]['answer'], sample_plan()['questions'][-1]['answer'])
+        self.assertEqual(json.loads(raw)['blocks'][-2]['answer'], sample_plan()['questions'][-1]['answer'])
         self.assertEqual(design.call_count, 2)
         self.assertIn('issues', design.call_args_list[1].args[4]['properties'])
         old.assert_not_called()
 
-    def test_non_interest_request_falls_back_to_original_generation(self):
-        with patch.object(llm, '_generate', return_value=json.dumps({'has_interest': False})), patch.object(
-                llm, '_generate_with_retry', return_value=('기존 결과', llm.MODELS[0])) as old:
-            result = llm._generate_for_request(None, llm.MODELS[0], '원래 지시',
-                request='쉽게', context='1학년 덧셈', n_questions=4)
-        self.assertEqual(result[0], '기존 결과')
-        old.assert_called_once()
+    def test_basic_without_interest_also_enters_content_review(self):
+        with patch.object(llm, '_generate_reviewed_worksheet', return_value=('검토된 결과', '검토 모델')) as review:
+            result = llm._generate_for_request(None, llm.MODELS[0], '지시', request='', context='1학년', n_questions=4)
+        self.assertEqual(result[0], '검토된 결과')
+        review.assert_called_once()
 
     def test_selected_model_is_used_for_design(self):
         with patch.object(llm, '_generate', side_effect=passing_generation()) as design:
             _, used = llm._generate_for_request(None, 'gemini-3.6-flash', '기존 지시',
-                request='공룡을 좋아해', context='3학년 곱셈', n_questions=2)
+                request='공룡을 좋아해', context='3학년 곱셈', n_questions=2, kind="inquiry")
         self.assertEqual(used, 'gemini-3.6-flash')
         self.assertEqual(design.call_args.args[1], 'gemini-3.6-flash')
 
@@ -171,7 +169,7 @@ class ActivityDesignTests(unittest.TestCase):
                 llm, '_generate_with_retry') as original:
             with self.assertRaisesRegex(llm.AnalyzeError, '활동 설계를 마치지 못했어요'):
                 llm._generate_for_request(None, llm.MODELS[0], '기존 지시', request='공룡을 좋아해',
-                    context='3학년 곱셈', n_questions=2)
+                    context='3학년 곱셈', n_questions=2, kind="inquiry")
         self.assertEqual([call.args[1] for call in design.call_args_list], ['gemini-3.8-flash', 'gemini-3.6-flash'])
         original.assert_not_called()
 

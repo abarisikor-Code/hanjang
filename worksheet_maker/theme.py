@@ -129,6 +129,12 @@ def _path(name: str) -> Path:
 
 
 PRESET_ORDER = ["기본", "교과서형", "활동지형", "시험지형", "저학년 놀이형", "노트형"]
+ACTIVE_PRESETS = ("기본", "활동지형", "시험지형")
+
+
+def exam_theme() -> Theme:
+    """평가에서 공통으로 쓰는 한 가지 기본 양식."""
+    return Theme.model_validate_json((THEME_DIR / "시험지형.json").read_text(encoding="utf-8"))
 
 
 def list_themes() -> list[Theme]:

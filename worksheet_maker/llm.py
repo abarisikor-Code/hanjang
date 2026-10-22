@@ -415,10 +415,22 @@ MIX_RULES = {
 MIX_LABELS = {"separate": "영역별로 차례대로", "combined": "여러 내용을 엮은 복합 문제"}
 
 
-def _interest_rule(request: str) -> str:
+def _interest_rule(request: str, kind: str = "inquiry") -> str:
     """관심사가 있는 요청만 생활 맥락으로 엮는다. 난이도·유형 규칙이 우선이다."""
     if not request.strip():
         return ""
+    if kind != "inquiry":
+        return """
+## 관심사·주제를 배울 내용과 엮는 법
+쉽게·문제 수 같은 조건만 있으면 주제를 새로 강요하지 않는다. 저학년·기초는 한 문항에 한 가지 짧은 행동만 요구한다.
+과목별 나누기에서는 과목 사이를 억지로 엮지 않는다.
+관심사 이름만 바꾼 문제로 채우지 말고 과목의 기능을 자연스럽게 쓰는 자료와 상황을 만든다.
+다만 고른 유형의 목적이 우선이다. 개념 익히기는 설명·예시·적용을, 평가는 독립 문항을,
+반복 연습은 짧은 기능 연습을 유지한다. 모든 문항을 하나의 탐구 프로젝트로 바꾸지 않는다.
+인원·기간·규모에 맞는 양을 먼저 고르고 학년의 수 범위를 억지로 맞추려고 물품 수를 부풀리지 않는다.
+원 단위 가격은 정수, 소수는 kg·L·m 등 자연스러운 측정량으로 쓴다. 근거 없는 동물 급여량·약물·건강 주장은 쓰지 않는다.
+창작 지문은 '학습용 창작 글', 가상 기록은 활동용 자료임을 밝힌다. 정답을 다른 문항에 노출하지 않는다.
+"""
     return """
 ## 관심사·주제를 배울 내용과 엮는 법
 - 추가 요청이나 머리말에 좋아하는 대상·관심사·주제가 있을 때만 적용한다. '쉽게', '문제 10개' 같은 조건만 있으면 주제를 새로 강요하지 않는다.
@@ -461,7 +473,7 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
                           force_context: bool = False) -> tuple[str, str]:
     """관심사·융합·탐구의 상황과 문항을 함께 설계하고 코드가 그대로 옮긴다."""
     force_context = force_context or kind == "inquiry"
-    if plan_activity and kind in {"standard", "test", "inquiry"} and (request.strip() or force_context):
+    if plan_activity and kind == "inquiry":
         from . import activity
 
         _notify("좋아하는 주제와 배울 내용을 엮어 활동을 설계하는 중…")
@@ -515,7 +527,48 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
             raise AnalyzeError(f"관심사를 엮는 활동 설계를 마치지 못했어요.\n{exc}") from exc
         if ws is not None:
             return ws.model_dump_json(), used
-    return _generate_with_retry(client, model, prompt, [], response_schema())
+    return _generate_reviewed_worksheet(client, model, prompt, request=request, context=context,
+                                       n_questions=n_questions, kind=kind)
+
+
+def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_questions, kind):
+    """공동 상황을 강요하지 않고 네 유형의 새 문제를 유형별로 검토한다."""
+    from . import activity, content_review
+
+    preferred = "gemini-3.8-flash" if model == MODELS[0] else model
+    order = list(dict.fromkeys([preferred, "gemini-3.6-flash", "gemini-3.8-flash"]))
+
+    def design(chosen, instruction):
+        raw = _generate(client, chosen, instruction, [], response_schema())
+        try:
+            data = _parse_json(raw)
+            ws = Worksheet.model_validate(data.get("worksheet", data))
+            ws.kind = kind
+            return ws
+        except (AnalyzeError, ValueError, TypeError, AttributeError) as exc:
+            raise _BrokenOutput("새 학습지 응답을 읽지 못했습니다.") from exc
+
+    ws, used = _with_retry(order, lambda chosen: design(chosen, prompt))
+    for attempt in range(3):
+        _notify("유형에 맞는 구성과 수량·자료·정답을 검토하는 중…")
+        instruction = content_review.prompt(ws, context=context, request=request, kind=kind, n=n_questions)
+
+        def inspect(chosen):
+            raw = _generate(client, chosen, instruction, [], activity.review_schema())
+            try:
+                return activity.parse_review(_parse_json(raw), n_questions)
+            except (AnalyzeError, ValueError, TypeError) as exc:
+                raise _BrokenOutput("내용 검토 결과를 읽지 못했습니다.") from exc
+
+        issues, _ = _with_retry(list(dict.fromkeys([used, *order])), inspect)
+        issues = content_review.structure_issues(ws, kind, n_questions) + issues
+        if not issues:
+            return ws.model_dump_json(), used
+        if attempt == 2:
+            raise AnalyzeError("유형에 맞는 구성이나 내용을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
+        _notify("검토에서 찾은 문제를 자료·문항·정답까지 함께 고치는 중…")
+        instruction = content_review.repair_prompt(prompt, ws, issues)
+        ws, used = _with_retry(list(dict.fromkeys([used, *order])), lambda chosen: design(chosen, instruction))
 
 
 def generate_for_standards(
@@ -538,6 +591,7 @@ def generate_for_standards(
     if not api_key.strip():
         raise AnalyzeError("Gemini API 키가 없습니다. 왼쪽 설정에 입력해 주세요.")
 
+    kind = kinds_mod.for_generation(kind)
     diff_name, diff_rule = DIFFICULTY.get(difficulty, DIFFICULTY["standard"])
     std_lines = "\n".join(
         f"- [{s.code}] ({s.area}{' > ' + s.topic if s.topic else ''}) {s.text}"
@@ -560,7 +614,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 ## 학습지 유형: {kinds_mod.label(kind)}
 {kinds_mod.rule(kind, n_questions)}
 
-- 학습 목표(goals)는 성취기준을 아이 눈높이 말로 1~2개 쓴다. subject는 "{subject}", unit은 단원명(없으면 영역 이름), title은 아이가 흥미를 가질 짧은 제목.
+- 학습 목표(goals)는 {"빈 배열로 둔다" if kind == "test" else "성취기준을 아이 눈높이 말로 1~2개 쓴다"}. subject는 "{subject}", unit은 단원명(없으면 영역 이름), title은 아이가 흥미를 가질 짧은 제목.
 - 모든 문항에 answer(정답)와 solution(해설)을 쓴다. 해설은 부모가 아이에게 설명해 줄 수 있게 1~2문장.
   선택형 answer는 정답 선택지의 번호만 ①~⑤로 쓴다(예: ②). O/X는 '(1) O (2) X'처럼 쓴다. 빈칸 채우기는 본문에 [[정답]]으로 표시한다.
 - 문항 번호·선택지 번호는 쓰지 않는다(프로그램이 붙인다).
@@ -583,7 +637,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 - 특정 출판사 교과서 문장을 그대로 베끼지 않고 새로 쓴다.
 - 영어는 지시문을 한국어로 쓰고, 영어 문장은 그 학년 수준의 쉽고 짧은 문장만 쓴다.
 {f"{chr(10)}## 추가 요청{chr(10)}{extra.strip()}" if extra.strip() else ""}
-{_interest_rule(extra)}
+{_interest_rule(extra, kind)}
 
 ## 컴포넌트 목록
 {component_guide()}
@@ -654,7 +708,8 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 - 확실하지 않은 사실, 연도, 수치, 인물 정보는 쓰지 않는다. 계산 문항은 정답을 한 번 더 확인한다.
 - 특정 교과서 문장을 그대로 베끼지 않고 새로 쓴다.
 {f"{chr(10)}## 추가 요청{chr(10)}{extra.strip()}" if extra.strip() else ""}
-{_interest_rule(chr(10).join([title, unit, *goals, extra]))}
+{_interest_rule(chr(10).join([title, unit, *goals, extra]), "standard")}
+{kinds_mod.rule("standard", n_questions)}
 
 ## 컴포넌트 목록
 {component_guide()}
@@ -714,6 +769,7 @@ def generate_integrated(
         else:
             blocks.append(f"### {subj} — 아래 중 주제와 가장 잘 어울리는 1~2개를 골라 다룬다\n{lines(candidates[subj])}")
     task_name, task_rule = TASK_TYPES.get(task_type, TASK_TYPES["project"])
+    kind = kinds_mod.for_generation(kind)
     diff_name, diff_rule = DIFFICULTY.get(difficulty, DIFFICULTY["standard"])
     joined = " · ".join(subjects)
 
@@ -737,10 +793,10 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 - 어느 한 과목이 들러리가 되지 않게, 각 과목의 성취기준이 실제로 쓰이도록 한다.
   (예: 수학+사회라면 우리 고장 조사 자료를 표·그래프로 정리하고 해석하기)
 - 확인 문항 꼭 {n_questions}개.{" 소제목이 과목을 알려 주므로 문항 앞에 과목 표시는 하지 않는다." if separate else " 각 문항 body 맨 앞에 [수학], [사회]처럼 그 문항이 쓰는 과목을 표시한다."}
-{("- 순서: " + ("과목마다 section → (필요하면 text·concept) → 문항, 과목 순서는 위 목록 순서 → 마지막 reflection(과목별 점검)." if separate
-  else "section(주제 소개) → text 또는 reading(상황·자료) → activity와 문항 → 마지막 reflection(과목별 스스로 점검 포함).")) if kind == "standard"
+{("- 순서: " + ("과목마다 section → concept·풀이 예시 → 기초 확인 → 적용 문항, 과목 순서는 위 목록 순서 → 마지막 reflection(과목별 점검)." if separate
+  else "공통 상황의 자료 → 과목별 핵심 concept·풀이 예시 → 직접 풀기 → 다른 조건에 적용하기 → 마지막 reflection.")) if kind == "standard"
   else f"## 학습지 유형: {kinds_mod.label(kind)}{chr(10)}{kinds_mod.rule(kind, n_questions)}{chr(10)}- 과목이 여럿이므로 위 유형의 짜임새 안에서 과목마다 고르게 다룬다."}
-- subject는 "{joined}{"" if separate else " 융합"}", unit은 {"다루는 내용을 짧게" if separate else "주제"}, title은 아이가 흥미를 가질 짧은 제목. goals는 과목별로 1개씩.
+- subject는 "{joined}{"" if separate else " 융합"}", unit은 {"다루는 내용을 짧게" if separate else "주제"}, title은 아이가 흥미를 가질 짧은 제목. goals는 {"빈 배열" if kind == "test" else "과목별로 1개씩"}.
 - 모든 문항에 answer와 solution을 쓴다. 선택형은 정답 번호만 ①~⑤로(예: ②), O/X는 '(1) O (2) X'처럼. 빈칸은 [[정답]].
 - 문항 번호·선택지 번호는 쓰지 않는다(프로그램이 붙인다).
 - 수·도형·측정·자료를 다루는 내용이면 이해를 돕는 diagram(도식)을 1~3개 넣는다 (묶음·배열·수직선·분수·시계·그래프·그림그래프·도형·각도·수 모형). 도식은 프로그램이 diagram_json대로 정확히 그린다.
@@ -760,7 +816,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 - 수학 문항은 그 학년이 배우는 수의 범위를 지킨다(예: 3학년 덧셈·뺄셈은 세 자리 수까지, 돈 계산도 그 범위 안에서).
   다룰 수학 성취기준을 직접 고르지 않았다면 위 후보 중 실제로 쓴 성취기준의 범위를 따른다.
 {f"{chr(10)}## 추가 요청{chr(10)}{extra.strip()}" if extra.strip() else ""}
-{_interest_rule(chr(10).join([theme, extra]))}
+{_interest_rule(chr(10).join([theme, extra]), kind)}
 
 ## 컴포넌트 목록
 {component_guide()}
@@ -793,7 +849,7 @@ _REQUEST_SCHEMA = {
         "subjects": {"type": "array", "items": {"type": "string"}, "description": "과목 (국어·수학·영어·사회·과학)"},
         "codes": {"type": "array", "items": {"type": "string"}, "description": "고른 성취기준 코드"},
         "task_type": {"type": "string", "enum": list(TASK_TYPES), "description": "과목이 둘 이상일 때 과제 형태"},
-        "kind": {"type": "string", "enum": list(kinds_mod.KINDS), "description": "학습지 유형"},
+        "kind": {"type": "string", "enum": list(kinds_mod.ACTIVE_KINDS), "description": "학습지 유형"},
         "extra": {"type": "string", "description": "학년·과목·내용 말고 남은 바람. 좋아하는 대상·관심사·원하는 활동과 조건을 빠뜨리지 않고 보존한다. 없으면 빈 문자열"},
     },
     "required": ["grade", "subjects", "codes", "task_type", "kind", "extra"],
@@ -821,8 +877,9 @@ def understand_request(*, api_key: str, text: str, catalog: str, default_grade: 
   목록에 없는 코드를 만들지 않는다. 맞는 것이 없으면 그 과목은 비워 둔다.
 - task_type: 과목이 둘 이상일 때만 의미가 있다. '엮어서·함께·융합·프로젝트·이야기'처럼 하나로 엮어 달라는 말이 있으면
   project(조사·만들기)·story(이야기 속 문제)·inquiry(탐구) 중 맞는 것, 그런 말이 없으면 separate(과목별로 나눠서).
-- kind: 학습지 유형. 시험·평가·테스트 → test, 연산·계산·낱말 연습·반복·드릴 → drill, 정리·노트·요약 → note,
-  탐구·실험·관찰·조사 활동 → inquiry, 놀이·게임·빙고 → game, 말이 없으면 standard.
+- kind: 학습지 유형은 네 가지다. 시험·평가·테스트·배운 내용 확인 → test, 연산·낱말·반복 연습 → drill,
+  탐구·실험·관찰·조사·문제 해결 → inquiry, 개념·정리·노트·요약·말이 없으면 standard.
+  빙고·놀이를 요청하면 drill로 고르고 extra에 요청을 보존하되 빙고판을 만들지는 않는다.
 - extra: 학년·과목·배울 내용·유형 말고 남은 바람을 보존한다. 좋아하는 대상·관심사와 하고 싶은 활동·조건을 빠뜨리지 않는다.
   예: '공룡을 좋아하고 박물관을 꾸미고 싶어'를 '공룡이 나오게'로 줄이지 말고 그대로 남긴다.
   '축구를 좋아해'는 '축구를 좋아해'로 보존한다. 관심사 때문에 과목·성취기준·난이도·과제 형태를 임의로 바꾸지 않는다. 남은 바람이 없으면 빈 문자열.

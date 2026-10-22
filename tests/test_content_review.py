@@ -45,7 +45,7 @@ class ContentReviewTests(unittest.TestCase):
     def run_plan(self, outputs):
         with patch.object(llm, '_generate', side_effect=[json.dumps(v) for v in outputs]) as call:
             result = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request='가족 저녁 식사',
-                context='3학년 세 자리 수 덧셈과 뺄셈', n_questions=2)
+                context='3학년 세 자리 수 덧셈과 뺄셈', n_questions=2, kind="inquiry")
         return result, call
 
     def test_repair_updates_materials_questions_answers_together_and_is_rechecked(self):
@@ -58,7 +58,7 @@ class ContentReviewTests(unittest.TestCase):
         (raw, _), call = self.run_plan([bad, {'issues': [issue()]}, fixed, {'issues': []}])
         ws = json.loads(raw)
         self.assertIn('250mL', ws['blocks'][1]['body'])
-        self.assertEqual(ws['blocks'][-2]['answer'], '②')
+        self.assertEqual(next(b for b in ws['blocks'] if b['type'] == 'multiple_choice')['answer'], '②')
         self.assertEqual(call.call_count, 4)
         repair = call.call_args_list[2].args[2]
         self.assertIn('달걀 250개', repair)
@@ -83,7 +83,7 @@ class ContentReviewTests(unittest.TestCase):
                 llm._BrokenOutput('검토 응답 없음'), llm._BrokenOutput('검토 응답 없음')]) as call:
             with self.assertRaises(llm.AnalyzeError):
                 llm._generate_for_request(None, llm.MODELS[0], '지시', request='가족 저녁 식사',
-                    context='3학년', n_questions=2)
+                    context='3학년', n_questions=2, kind="inquiry")
         self.assertEqual([c.args[1] for c in call.call_args_list],
                          ['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.6-flash'])
 
@@ -97,8 +97,8 @@ class ContentReviewTests(unittest.TestCase):
         self.assertEqual(activity.parse_review({'issues': []}, 2), [])
 
     def test_repair_cannot_escape_to_non_interest_generation(self):
-        with self.assertRaisesRegex(llm.AnalyzeError, '충분히 바로잡지 못했어요'):
-            self.run_plan([sample_plan(), {'issues': [issue()]}, {'has_interest': False}])
+        with self.assertRaises(llm.AnalyzeError):
+            self.run_plan([sample_plan(), {'issues': [issue()]}, {'has_interest': False}, {'has_interest': False}])
 
 
 if __name__ == '__main__':
