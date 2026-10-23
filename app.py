@@ -347,6 +347,8 @@ with st.sidebar:
         "🔑 Gemini API 키", type="password", key="w_api_key", on_change=_key_typed,
         help=f"{KEY_URL} 에서 무료로 받을 수 있어요. 받는 방법은 아래 '키 받는 방법'을 보세요.",
     ).strip()
+    st.link_button("🔑 API 키 발급받기 ↗", KEY_URL, width="stretch",
+                   help="새 탭에서 Google AI Studio의 API 키 발급 페이지를 열어요.")
     if LOCAL:
         if api_key and api_key != env_key:
             st.button("💾 이 컴퓨터에 키 기억하기", on_click=_remember_key, args=(api_key,), width="stretch", type="primary",
