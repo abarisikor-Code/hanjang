@@ -374,9 +374,24 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
     reasons = {"busy": "앞 모델이 혼잡·연결 오류로 응답하지 않았어요", "timeout": "앞 모델의 응답 대기 시간이 지났어요",
                "quota": "앞 모델의 사용 한도를 넘었어요", "model": "앞 모델을 찾지 못했어요", "output": "앞 모델의 응답 형식이 맞지 않았어요"}
     previous_kind = "busy"
+    failures = []
+    names = {"busy": "서버·연결 오류", "timeout": "응답 시간 초과", "quota": "사용 한도 초과",
+             "model": "모델 없음", "output": "응답 형식 오류", "key": "키·권한 오류", "other": "호출 오류"}
+
+    def failed(message):
+        # 예외 원문에는 키·요청 내용이 들어갈 수 있어 단계·시간·상태 번호만 남긴다.
+        details = " / ".join(failures)
+        return AnalyzeError(f"{message}\n\n확인 기록: {stage}" + (f" — {details}" if details else ""))
+
+    def check_budget():
+        try:
+            _remaining_time()
+        except AnalyzeError as exc:
+            raise failed(str(exc)) from exc
+
     for n, m in enumerate(order):
         for wait in (0, *RETRY_WAITS):
-            _remaining_time()
+            check_budget()
             if wait:
                 time.sleep(wait)
             budget_start = _budget_started.get()
@@ -384,21 +399,26 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
             _notify(f"{stage} · {MODEL_LABELS.get(m, m).split(' (')[0]} 요청 중…"
                     + (f" ({reasons.get(previous_kind, '앞 모델에서 오류가 났어요')} · 전체 {elapsed}초째에 전환)" if n else f" (전체 {elapsed}초째에 시작)"))
             try:
+                request_start = time.perf_counter()
                 result = call(m)
-                _remaining_time()
+                check_budget()
                 return result, m
             except AnalyzeError:
                 raise
             except Exception as e:  # SDK 예외 종류가 버전마다 달라 여기서 분류한다.
                 last, kind = e, _kind(e)
+                status = _status(e)
+                seconds = time.perf_counter() - request_start
+                failures.append(f"{m}: {names.get(kind, names['other'])}"
+                                + (f" ({status})" if status else "") + f", {seconds:.1f}초")
                 previous_kind = kind
                 if kind in ("busy", "timeout", "output"):
                     continue  # 같은 모델로 다시
                 if kind in ("quota", "model"):
                     break  # 한도·모델 문제는 모델별이라 다음 모델로
-                raise AnalyzeError(_MESSAGES.get(kind) or f"Gemini 호출에 실패했습니다: {e}") from e
+                raise failed(_MESSAGES.get(kind) or "Gemini 호출을 마치지 못했어요. 잠시 후 다시 시도해 주세요.") from e
     kind = _kind(last) if last else "busy"
-    raise AnalyzeError(_MESSAGES.get(kind, _MESSAGES['busy'])) from last
+    raise failed(_MESSAGES.get(kind, _MESSAGES['busy'])) from last
 
 
 # ----- 성취기준으로 새 학습지 만들기 (학부모 모드) -----

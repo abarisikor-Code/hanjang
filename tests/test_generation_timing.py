@@ -10,6 +10,21 @@ from worksheet_maker.schema import Block, Worksheet
 
 
 class GenerationTimingTests(unittest.TestCase):
+    def test_mixed_failures_keep_stage_quota_and_timeout_without_raw_exception(self):
+        class QuotaError(Exception):
+            code = 429
+        def call(model):
+            if model == 'first':
+                raise QuotaError('private-request-and-key')
+            raise httpx.ReadTimeout('private-request-and-key')
+        with self.assertRaises(llm.AnalyzeError) as raised:
+            llm._with_retry(['first', 'second'], call, stage='2단계 · 내용 검토')
+        message = str(raised.exception)
+        self.assertIn('2단계 · 내용 검토', message)
+        self.assertIn('first: 사용 한도 초과 (429)', message)
+        self.assertIn('second: 응답 시간 초과', message)
+        self.assertNotIn('private-request-and-key', message)
+
     def test_request_timeout_uses_remaining_shared_budget_and_preserves_thinking(self):
         clock = [0.0]
         configs = []
