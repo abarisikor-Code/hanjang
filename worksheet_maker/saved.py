@@ -65,7 +65,7 @@ def unpack(filename: str, data: bytes) -> Saved:
     if Path(filename).suffix.lower() in (".html", ".htm"):
         m = _DATA_TAG.search(text)
         if not m:
-            raise LoadError("이 HTML에는 편집 정보가 없습니다. 한장에서 'HTML 저장'으로 만든 파일만 다시 열 수 있어요.")
+            raise LoadError("이 HTML에는 편집 정보가 없습니다. 한장에서 '편집용 HTML 저장'으로 보관한 원본을 열어 주세요. 꾸미기용 사본은 다시 편집할 수 없어요.")
         raw = m.group(1)
     else:
         raw = text

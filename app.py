@@ -1429,24 +1429,34 @@ def basket(entries: list[tuple[str, str, int]], title: str = "🧺 고른 배울
 def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: bool = True) -> dict | None:
     """① 모양(누르면 바로 바뀜) → ② 설정과 만들기 버튼.
     설정 칸은 폼으로 묶여 있어서 글을 쓰고 엔터 없이 바로 만들기를 눌러도 그대로 적용된다. 누르면 설정을 돌려준다."""
-    st.markdown("##### 📋 ① 학습지 유형 — 어떤 짜임새로 만들까요?")
-    kind_gallery()
+    task_type = "project"
+    if not single:
+        st.markdown("##### 📋 ① 융합 과제 형태 — 어떤 흐름으로 만들까요?")
+        task_type = st.segmented_control(
+            "과제 형태", list(llm.TASK_TYPES), default=ss.get("nl", {}).get("task", "project"),
+            key=f"{prefix}_task", format_func=lambda k: llm.TASK_TYPES[k][0],
+        ) or "project"
+        st.info(llm.TASK_TYPES[task_type][1])
+    if single or task_type == "separate":
+        if not single:
+            st.caption("과목마다 아래 유형의 짜임새로 만들어요.")
+        else:
+            st.markdown("##### 📋 ① 학습지 유형 — 어떤 짜임새로 만들까요?")
+        kind_gallery()
+    else:
+        st.caption("문제 해결 탐구 유형 안에서 고른 과제의 흐름을 적용해요. 유형을 중복으로 고르지 않아도 됩니다.")
+    generation_kind = kinds.for_generation(ss.get("wkind", "standard")) if single or task_type == "separate" else "inquiry"
     st.markdown("##### 🎨 ② 학습지 모양 — 눌러서 고르세요")
     with st.expander("📄 내 학습지 양식에 넣기 (선택)" + (" — 사용 중" if ss.get("form") else ""), expanded=bool(ss.get("form"))):
         form_panel()
     if ss.get("form"):
         st.caption("양식을 쓰는 동안 아래 모양은 문제 번호·소제목·글꼴 모양에만 쓰여요.")
-    theme_gallery(kind=kinds.for_generation(ss.get("wkind", "standard")))
+    theme_gallery(kind=generation_kind)
     st.markdown("##### ⚙️ ③ 만들기 설정")
     question_count(prefix)
     with st.form(f"{prefix}_form"):
-        task_type, theme_text = "project", ""
+        theme_text = ""
         if not single:
-            task_type = st.segmented_control(
-                "과제 형태", list(llm.TASK_TYPES), default=ss.get("nl", {}).get("task", "project"), key=f"{prefix}_task",
-                format_func=lambda k: llm.TASK_TYPES[k][0],
-            ) or "project"
-            st.caption("  \n".join(f"**{name}** — {desc}" for name, desc in llm.TASK_TYPES.values()))
             theme_text = st.text_input("주제·상황 (선택)", value=ss.get("nl", {}).get("theme", ""), key=f"{prefix}_theme_text",
                                        placeholder="예: 우리 동네 시장 조사, 가족 캠핑 계획 세우기, 우리 반 축구 대회")
         difficulty = st.segmented_control(
@@ -1478,7 +1488,7 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
         return None
     ss.answers_on = answers
     ss.review_on = review
-    return {"wkind": kinds.for_generation(ss.get("wkind", "standard")), "review": review,
+    return {"wkind": generation_kind, "review": review,
             "difficulty": difficulty, "n_questions": n_questions, "mix": mix, "unit": unit, "extra": extra,
             "task_type": task_type, "theme_text": theme_text}
 
@@ -2075,6 +2085,64 @@ def _repair_blocks() -> None:
             _forget_widgets(raw["_id"])
 
 
+def handoff_panel(ws: Worksheet) -> None:
+    from worksheet_maker import handoff
+
+    with st.expander("✨ ChatGPT로 더 예쁘게"):
+        st.write("한장에서 문제 수정을 마친 뒤, ChatGPT에서 인쇄 모양을 꾸며 보세요.")
+        include_answers = st.toggle("문제와 답지 모두 꾸미기", value=False, key="handoff_answers")
+        reference = st.toggle("참고할 PDF·사진 양식이 있어요", value=False, key="handoff_reference")
+        output = st.radio("받고 싶은 결과", ["html", "image"], horizontal=True, key="handoff_output",
+                          format_func=lambda v: "글자·수식을 유지한 인쇄용 학습지 (권장)" if v == "html" else "학습지 전체를 그림으로")
+        if reference:
+            st.caption("참고 양식은 아래 전달 파일과 함께 ChatGPT에 직접 첨부하세요. 한장에는 다시 올리지 않아도 돼요.")
+        if output == "image":
+            st.caption("그림으로 받으면 글자·수식·표가 원문과 맞는지 인쇄 전에 확인해 주세요. Thinking은 보일 때만 선택하면 됩니다.")
+        signature = handoff.fingerprint(ws, include_answers, reference, output)
+        cached = ss.get("handoff_prompt", {})
+        matched = cached.get("signature") == signature
+        if cached and not matched:
+            st.caption("내용이나 선택이 바뀌어 이전 맞춤 요청문은 사용하지 않아요. 필요하면 새로 만들어 주세요.")
+        if st.button("✨ 현재 내용을 읽고 맞춤 요청문 만들기", key="handoff_make_prompt",
+                     help="현재 학습지의 글과 표를 AI가 읽습니다. 이미지 원본은 보내지 않고, API 사용량이 추가됩니다."):
+            try:
+                with ai_status("꾸미기 요청문을 만드는 중"):
+                    request = llm.suggest_styling_prompt(api_key=api_key, worksheet=ws,
+                        include_answers=include_answers, reference=reference, output=output, model=model)
+                cached = {"signature": signature, "text": request}
+                ss.handoff_prompt = cached
+                matched = True
+            except llm.AnalyzeError as exc:
+                st.error(str(exc))
+        request = cached["text"] if matched else handoff.fixed_instructions(include_answers, reference, output)
+        st.caption("맞춤 요청문" if matched else "기본 요청문 — AI 호출 없이 바로 쓸 수 있어요.")
+        st.code(request, language=None, wrap_lines=True)
+        st.caption("위 요청문 오른쪽 위의 복사 버튼을 누르세요.")
+        name = re.sub(r'[\\/:*?"<>|\s]+', '_', ws.title).strip('_') or '학습지'
+        cols = st.columns(2)
+        transfer = handoff.export_html(ws, include_answers=include_answers,
+            level=level, theme=current_theme(), footer="", per_page=_per_page())
+        cols[0].download_button("① 꾸미기용 파일 받기", transfer,
+            file_name=f"{name}_꾸미기용{'_문제와답지' if include_answers else '_문제만'}.html",
+            mime="text/html", key="handoff_download", width="stretch")
+        cols[1].link_button("② ChatGPT 열기 ↗", "https://chatgpt.com/", width="stretch")
+        steps = st.columns(3)
+        for col, title, text in zip(steps,
+                ["① 📎 파일 첨부", "② 📋 요청문 붙여넣기", "③ 💾 결과 받기"],
+                ["ChatGPT의 첨부 버튼으로 꾸미기용 HTML을 올려요. 참고 양식이 있으면 함께 올려요.",
+                 "위 요청문을 복사해 붙여넣고 보내세요. HTML 첨부가 안 되면 아래에서 텍스트 사본을 받아 올리세요.",
+                 "결과를 내려받아 내용·수식·답 공간을 확인해요. 편집용 원본은 따로 보관하세요."]):
+            with col.container(border=True):
+                st.markdown(f"**{title}**")
+                st.write(text)
+        with st.expander("HTML 첨부가 안 되나요?"):
+            st.download_button("텍스트 사본 받기", transfer, file_name=f"{name}_꾸미기용.txt",
+                               mime="text/plain", key="handoff_text_download")
+            st.caption("같은 내용을 담은 텍스트 파일이에요. ChatGPT에 이 파일을 첨부하고 위 요청문을 보내세요.")
+        st.caption("꾸미기용은 내용을 전달하는 인쇄용 사본이며 원본 양식 배경은 넣지 않아요. 이어서 수정할 파일은 위의 ‘편집용 HTML 저장’으로 보관하세요.")
+        st.caption("파일 첨부와 요청문 전송은 ChatGPT에서 직접 해 주세요. 파일·그림 기능의 이용 가능 여부와 한도는 계정에 따라 달라요.")
+
+
 def page_result() -> None:
     _repair_blocks()
     ws = current_worksheet()
@@ -2096,10 +2164,10 @@ def page_result() -> None:
             st.markdown("\n".join(f"- {md(f)}" for f in fixes))
     filename = re.sub(r'[\\/:*?"<>|\s]+', "_", ws.title).strip("_") or "worksheet"
     a1, a2, a3, a4 = st.columns(4)
-    a1.download_button("💾 저장하기", html, file_name=f"{filename}.html", mime="text/html", type="primary", width="stretch",
+    a1.download_button("💾 편집용 HTML 저장", html, file_name=f"{filename}.html", mime="text/html", type="primary", width="stretch",
                        help="이 파일을 크롬·엣지로 열면 인쇄할 수 있고, 한장에서 다시 열어 고칠 수도 있어요.")
     with a2.popover("🖨️ 인쇄하는 법", width="stretch"):
-        st.markdown("1. 왼쪽 **💾 저장하기**를 눌러 파일을 저장해요\n2. 저장한 파일을 **더블클릭**(크롬·엣지로 열림)\n"
+        st.markdown("1. 왼쪽 **💾 편집용 HTML 저장**을 눌러 파일을 저장해요\n2. 저장한 파일을 **더블클릭**(크롬·엣지로 열림)\n"
                     "3. 오른쪽 위 **인쇄하기** 버튼 또는 **Ctrl+P**\n4. 용지 **A4**, '머리글과 바닥글' **끄기** → 인쇄\n\n"
                     "PDF로 저장하려면 3번에서 프린터를 **'PDF로 저장'** 으로 바꾸세요.")
     if ss.get("last_req"):
@@ -2109,6 +2177,14 @@ def page_result() -> None:
         a3.button("📂 다른 자료로 만들기", width="stretch", on_click=go, args=("tools",))
     a4.button("➕ 새 학습지 만들기", width="stretch", on_click=go, args=("home",))
 
+    st.caption("저장한 HTML은 처음 화면의 ‘저장해 둔 학습지 다시 열기’에 올리면 나중에도 수정할 수 있어요.")
+    with st.expander("📂 저장한 학습지 열기"):
+        st.file_uploader("한장에서 저장한 편집용 HTML", type=["html", "htm", "json"],
+                         key="result_open", on_change=_open_saved, args=("result_open",))
+        if "open_msg" in ss:
+            msg_kind, msg = ss.pop("open_msg")
+            (st.success if msg_kind == "success" else st.error)(msg)
+    handoff_panel(ws)
     left, right = st.columns([1, 1.25], gap="large")
     with right:
         preview_editor(ws)  # 미리보기에서 옮기기·빼기를 하면 여기서 바꾸고 다시 그린다
@@ -2122,11 +2198,15 @@ def page_result() -> None:
             block_list()
         with tabs[1]:
             with st.expander(f"📋 학습지 유형 — 지금: {kinds.label(ss.ws.get('kind', 'standard'))}"):
-                st.caption("누르면 오른쪽 학습지의 배치가 바로 바뀌어요. 문제 구성까지 그 유형에 맞추려면 아래 버튼으로 다시 만드세요.")
-                kind_gallery(cols_n=2, height=260, apply_now=True)
-                if ss.get("last_req") and st.button(f"🔄 '{kinds.label(ss.ws.get('kind', 'standard'))}'으로 다시 만들기",
-                                                    width="stretch", key="kind_remake"):
-                    _run({**ss.last_req, "wkind": ss.ws.get("kind", "standard")})
+                req = ss.get("last_req") or {}
+                if req.get("kind") == "fusion" and req.get("task_type", "project") != "separate":
+                    st.caption("고른 융합 과제의 흐름을 유지하고 있어요. 과제 형태를 새로 고르려면 ‘새 학습지 만들기’를 누르세요.")
+                else:
+                    st.caption("누르면 오른쪽 학습지의 배치가 바로 바뀌어요. 문제 구성까지 그 유형에 맞추려면 아래 버튼으로 다시 만드세요.")
+                    kind_gallery(cols_n=2, height=260, apply_now=True)
+                    if req and st.button(f"🔄 '{kinds.label(ss.ws.get('kind', 'standard'))}'으로 다시 만들기",
+                                         width="stretch", key="kind_remake"):
+                        _run({**req, "wkind": ss.ws.get("kind", "standard")})
             with st.expander("📄 내 학습지 양식에 넣기" + (" — 사용 중" if ss.get("form") else ""), expanded=bool(ss.get("form"))):
                 form_panel()
             st.caption("눌러서 고르면 오른쪽 학습지에 바로 적용돼요."

@@ -147,6 +147,7 @@ def render(
     form: Form | None = None,  # 내 학습지 양식: 이 양식 쪽 그림 위의 칸에 내용을 담는다
     edit: bool = False,  # 앱 미리보기 전용: 학습지 위에서 바로 고치는 도구(끌어서 옮기기·도구 막대)를 넣는다
     per_page: int = PER_PAGE,  # 한 쪽에 문제 몇 개까지 (0이면 나누지 않는다). 초등학생이 풀 공간을 두려고.
+    include_saved_data: bool = True,  # 외부 꾸미기 전달본에는 편집용 정답 데이터를 넣지 않는다.
 ) -> str:
     lv = dict(LEVELS[level_key(level)])
     theme = theme or Theme()
@@ -200,7 +201,7 @@ def render(
         form_pages=form_pages,
         doc=doc,
         form_has_title=doc["has_title"] if doc else any(r.kind == "title" for p in (form.pages if form else []) for r in p.regions),
-        saved_data=pack(ws, theme, level, footer, show_answers, form),  # 이 HTML을 앱에 다시 올리면 편집 상태로 열린다
+        saved_data=pack(ws, theme, level, footer, show_answers, form) if include_saved_data else "",
     )
 
 
