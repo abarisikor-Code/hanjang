@@ -145,7 +145,7 @@ class ActivityDesignTests(unittest.TestCase):
         with patch.object(llm, '_generate', side_effect=passing_generation()) as design, patch.object(llm, '_generate_with_retry') as old:
             raw, used = llm._generate_for_request(None, llm.MODELS[0], '기존 지시',
                 request='공룡을 좋아해', context='3학년 곱셈', n_questions=2, kind="inquiry")
-        self.assertEqual(used, 'gemini-3.8-flash')
+        self.assertEqual(used, 'gemini-3.6-flash')
         self.assertEqual(json.loads(raw)['blocks'][-2]['answer'], sample_plan()['questions'][-1]['answer'])
         self.assertEqual(design.call_count, 2)
         self.assertIn('issues', design.call_args_list[1].args[4]['properties'])
@@ -170,7 +170,7 @@ class ActivityDesignTests(unittest.TestCase):
             with self.assertRaisesRegex(llm.AnalyzeError, '활동 설계를 마치지 못했어요'):
                 llm._generate_for_request(None, llm.MODELS[0], '기존 지시', request='공룡을 좋아해',
                     context='3학년 곱셈', n_questions=2, kind="inquiry")
-        self.assertEqual([call.args[1] for call in design.call_args_list], ['gemini-3.8-flash', 'gemini-3.6-flash'])
+        self.assertEqual([call.args[1] for call in design.call_args_list], ['gemini-3.6-flash', 'gemini-3.8-flash'])
         original.assert_not_called()
 
 

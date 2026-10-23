@@ -23,11 +23,11 @@ class ContentReviewTests(unittest.TestCase):
         with patch('httpx.Client.send', return_value=response) as send:
             client = llm._generation_client('offline-test-key')
             try:
-                with self.assertRaises(Exception) as raised:
+                with llm.generation_budget(), self.assertRaises(Exception) as raised:
                     llm._generate(client, 'gemini-3.8-flash', '오프라인 점검', [], activity.review_schema())
                 self.assertEqual(llm._kind(raised.exception), 'busy')
-                # 현재 SDK는 attempts=0을 최소 1회 재시도로 바꾼다. 기본 3회보다 줄어든다.
-                self.assertEqual(send.call_count, 2,
+                # 새 생성 통신은 SDK 안에서 숨은 재시도를 하지 않는다.
+                self.assertEqual(send.call_count, 1,
                     [(call.args[0].method, call.args[0].url.path) for call in send.call_args_list])
             finally:
                 client.close()
@@ -85,7 +85,7 @@ class ContentReviewTests(unittest.TestCase):
                 llm._generate_for_request(None, llm.MODELS[0], '지시', request='가족 저녁 식사',
                     context='3학년', n_questions=2, kind="inquiry")
         self.assertEqual([c.args[1] for c in call.call_args_list],
-                         ['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.6-flash'])
+                         ['gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-3.8-flash'])
 
     def test_malformed_review_is_not_an_empty_issue_list(self):
         bad_results = [{}, {'issues': None}, {'issues': [dict(issue(), question=True)]},

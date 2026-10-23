@@ -308,7 +308,7 @@ def md(text: object) -> str:
 @contextmanager
 def ai_status(what: str):
     """AI 작업 중 진행 상황(어느 모델로 만드는 중인지, 모델을 바꿨는지)을 보여 준다."""
-    box = st.status(md(f"{what}… 생성·검토·수정으로 몇 분 걸릴 수 있어요"))
+    box = st.status(md(f"{what}… 응답이 늦거나 혼잡하면 정한 대기 시간 안에서 멈춥니다"))
     token = llm.progress.set(lambda msg: box.update(label=md(f"{what} — {msg}")))
     try:
         yield box
@@ -379,7 +379,7 @@ with st.sidebar:
             key_help()
     with st.expander("⚙️ 설정"):
         model = st.selectbox(
-            "AI 모델", llm.MODELS, format_func=lambda m: llm.MODEL_LABELS.get(m, m),
+            "AI 모델", llm.GENERATION_MODELS, format_func=lambda m: llm.MODEL_LABELS.get(m, m),
             help="고른 모델이 붐비거나 오래 걸리면 다른 모델로 자동으로 바꿔 만듭니다.",
         )
     st.caption("도움말: 막히면 🏠 처음 화면으로 돌아가 다시 시작해도 만들던 학습지는 남아 있어요.")
@@ -1469,9 +1469,9 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
         answers = st.toggle("정답·해설 쪽도 함께 만들기 (학습지 뒤에 새 쪽으로)", value=ss.answers_on, key=f"{prefix}_ans")
         st.caption("새 학습지는 유형별 구성과 수량·자료·정답을 자동으로 검토해요. 수정이 필요하면 몇 분 더 걸릴 수 있어요.")
         review = st.toggle("🔍 완성 후 정답·학년 범위 한 번 더 검토하기 (추가 시간·사용량)",
-                           value=ss.get("review_on", True), key=f"{prefix}_review",
-                           help="계산 문제의 정답은 검토를 꺼도 프로그램이 늘 다시 계산해서 바로잡아요. "
-                                "검토를 켜면 문장으로 된 문제, 학년에 맞지 않는 내용, 답이 애매한 문제까지 AI가 한 번 더 살펴 고쳐요.")
+                           value=ss.get("review_on", False), key=f"{prefix}_review",
+                           help="수량·자료·정답·학년 범위를 살피는 필수 내용 검토와 계산 검산은 항상 실행해요. "
+                                "이 선택은 완성 후 정답을 한 번 더 검토하며 시간과 사용량이 추가됩니다.")
         mix = "separate"
         if single and n_picked > 1:
             mix = st.segmented_control(
@@ -1495,6 +1495,7 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
             "task_type": task_type, "theme_text": theme_text}
 
 
+@llm.with_generation_budget
 def _run(req: dict) -> None:
     """학습지를 만들고 완성 화면으로 넘어간다. req는 다시 만들기에 그대로 쓰도록 저장한다."""
     kind = req["kind"]

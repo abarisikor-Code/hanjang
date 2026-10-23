@@ -6,8 +6,10 @@ import base64
 import json
 import re
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 
 from pydantic import ValidationError
 
@@ -23,11 +25,16 @@ from .theme import Theme
 MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash"]
 MODEL_LABELS = {
     "gemini-3.5-flash-lite": "빠름 · gemini-3.5-flash-lite (추천)",
-    "gemini-3.8-flash": "정밀 · gemini-3.8-flash (붐빌 때 느림, 무료 키 하루 20회)",
-    "gemini-3.6-flash": "보통 · gemini-3.6-flash",
+    "gemini-3.8-flash": "정밀 · gemini-3.8-flash (응답이 늦을 수 있어요)",
+    "gemini-3.6-flash": "기본 · gemini-3.6-flash (추천)",
 }
 THINKING = "high"  # 계산·사실 실수를 줄이려면 많이 생각하게 한다 (lite 기준 시간 차이는 수십 초 이내)
 REQUEST_TIMEOUT = 100  # 초. 통신 대기 제한이며, SDK 내부 재시도 때문에 모델 대체까지는 더 걸릴 수 있다.
+GENERATION_REQUEST_TIMEOUT = 60
+GENERATION_TIME_BUDGET = 150
+GENERATION_MODELS = ["gemini-3.6-flash", "gemini-3.8-flash"]
+_budget_deadline: ContextVar = ContextVar("generation_deadline", default=None)
+_budget_started: ContextVar = ContextVar("generation_started", default=None)
 RETRY_WAITS: tuple[int, ...] = ()  # 같은 모델 재시도 없음: 붐빌 때는 거절까지 오래 걸려서 다른 모델이 빠르다
 
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
@@ -51,6 +58,45 @@ class AnalyzeError(Exception):
 
 class _BrokenOutput(Exception):
     """응답이 중간에 끊긴 JSON. 다른 모델로 다시 시도한다."""
+
+
+@contextmanager
+def generation_budget(seconds: float = GENERATION_TIME_BUDGET):
+    """생성·검토·수정을 합친 대기 예산. 중첩 호출은 기존 예산을 이어 쓴다."""
+    if _budget_deadline.get() is not None:
+        yield
+        return
+    started = time.perf_counter()
+    deadline_token = _budget_deadline.set(started + seconds)
+    started_token = _budget_started.set(started)
+    try:
+        yield
+    finally:
+        _budget_started.reset(started_token)
+        _budget_deadline.reset(deadline_token)
+
+
+def with_generation_budget(fn):
+    @wraps(fn)
+    def run(*args, **kwargs):
+        with generation_budget():
+            return fn(*args, **kwargs)
+    return run
+
+
+def _remaining_time() -> float | None:
+    deadline = _budget_deadline.get()
+    if deadline is None:
+        return None
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise AnalyzeError("생성·검토에 정한 전체 대기 시간을 넘어서 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다. 잠시 후 다시 시도해 주세요.")
+    return remaining
+
+
+def _design_order(model: str) -> list[str]:
+    preferred = GENERATION_MODELS[0] if model == MODELS[0] else model
+    return list(dict.fromkeys([preferred, *GENERATION_MODELS]))
 
 
 @dataclass
@@ -141,6 +187,23 @@ def _schema(want_content: bool, want_style: bool) -> dict:
 
 
 def _generate(client, model: str, prompt: str, files: list[Attachment], schema: dict) -> str:
+    remaining = _remaining_time()
+    if remaining is not None:
+        # 새 생성에서는 공개 generate_content 통신을 써 요청당 1회와 남은 시간을 적용한다.
+        from google.genai import types
+        timeout_ms = max(1, int(min(GENERATION_REQUEST_TIMEOUT, remaining) * 1000))
+        config = {"response_mime_type": "application/json", "response_json_schema": schema,
+                  "thinking_config": {"thinking_level": THINKING},
+                  "http_options": {"timeout": timeout_ms, "retry_options": {"attempts": 1}}}
+        contents = [prompt] + [types.Part.from_bytes(data=f.data, mime_type=f.mime_type) for f in files]
+        result = client.models.generate_content(model=model, contents=contents, config=config)
+        _remaining_time()
+        text = result.text or ""
+        try:
+            _parse_json(text)
+        except AnalyzeError as exc:
+            raise _BrokenOutput("응답이 학습지 JSON 형식과 맞지 않습니다.") from exc
+        return text
     # 최신 SDK는 Interactions API, 구버전은 generate_content를 쓴다.
     if hasattr(client, "interactions"):
         inputs: list[dict] = [{"type": "text", "text": prompt}]
@@ -268,12 +331,18 @@ def _status(e: Exception) -> int | None:
 def _kind(e: Exception) -> str:
     """busy(잠시 후 되는 오류) / quota(한도 초과) / key(키 문제) / model(모델 없음) / other"""
     status, text = _status(e), str(e)
+    if isinstance(e, _BrokenOutput):
+        return "output"
     if status in (401, 403) or "API key" in text or "API_KEY" in text:
         return "key"
     if status == 429 or "RESOURCE_EXHAUSTED" in text:
         return "quota"
     if status == 404:
         return "model"
+    if status in (408, 504) or "timed out" in text.lower() or type(e).__name__ in (
+        "APITimeoutError", "ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout", "TimeoutError",
+    ):
+        return "timeout"
     if isinstance(e, _BrokenOutput) or (status and status >= 500) or "UNAVAILABLE" in text or "high demand" in text or type(e).__name__ in (
         "APIConnectionError", "APITimeoutError", "ConnectError", "ReadTimeout",
     ):
@@ -282,6 +351,8 @@ def _kind(e: Exception) -> str:
 
 
 _MESSAGES = {
+    "timeout": "정한 대기 시간 안에 AI 응답을 받지 못했어요. 이 오류만으로 구글 서버 혼잡인지 연결 문제인지 구분할 수는 없습니다. 잠시 후 다시 시도해 주세요.",
+    "output": "AI 응답 형식이 올바르지 않아 학습지로 읽지 못했어요. 같은 설정으로 다시 시도해 주세요.",
     "busy": "Gemini 서버가 지금 붐비거나 연결이 불안정합니다. 여러 모델로 다시 시도했지만 실패했어요. 1~2분 뒤에 다시 눌러 주세요.",
     "quota": "Gemini 사용 한도를 넘었습니다. 1분쯤 뒤에 다시 시도해 주세요. 무료 키라면 하루 한도가 끝났을 수 있어요(내일 다시 가능).",
     "key": "API 키가 올바르지 않거나 권한이 없습니다. .env 파일의 GEMINI_API_KEY를 확인해 주세요.",
@@ -290,35 +361,44 @@ _MESSAGES = {
 
 
 def _generate_with_retry(client, model: str, prompt: str, files: list[Attachment], schema: dict) -> tuple[str, str]:
-    order = [model] + [m for m in MODELS if m != model]
+    order = _design_order(model) if _budget_deadline.get() is not None else [model] + [m for m in MODELS if m != model]
     return _with_retry(order, lambda m: _generate(client, m, prompt, files, schema))
 
 
-def _with_retry(order: list[str], call):
-    """서버가 붐비면 같은 모델로 잠깐 기다렸다 다시 시도하고, 그래도 안 되면 다음 모델로 넘어간다.
+def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
+    """실패 이유를 구분해 다음 모델을 시도한다. 새 생성은 단계 사이에도 대기 예산을 공유한다.
     call(model)의 결과와 실제로 쓴 모델을 돌려준다."""
     last: Exception | None = None
     start = time.perf_counter()
+    order = list(dict.fromkeys(order))
+    reasons = {"busy": "앞 모델이 혼잡·연결 오류로 응답하지 않았어요", "timeout": "앞 모델의 응답 대기 시간이 지났어요",
+               "quota": "앞 모델의 사용 한도를 넘었어요", "model": "앞 모델을 찾지 못했어요", "output": "앞 모델의 응답 형식이 맞지 않았어요"}
+    previous_kind = "busy"
     for n, m in enumerate(order):
         for wait in (0, *RETRY_WAITS):
+            _remaining_time()
             if wait:
                 time.sleep(wait)
-            elapsed = int(time.perf_counter() - start)
-            _notify(f"{MODEL_LABELS.get(m, m).split(' (')[0]} 모델로 만드는 중…"
-                    + (f" (앞 모델이 붐벼서 바꿨어요 · {elapsed}초 지남)" if n else ""))
+            budget_start = _budget_started.get()
+            elapsed = int(time.perf_counter() - (budget_start if budget_start is not None else start))
+            _notify(f"{stage} · {MODEL_LABELS.get(m, m).split(' (')[0]} 요청 중…"
+                    + (f" ({reasons.get(previous_kind, '앞 모델에서 오류가 났어요')} · 전체 {elapsed}초째에 전환)" if n else f" (전체 {elapsed}초째에 시작)"))
             try:
-                return call(m), m
+                result = call(m)
+                _remaining_time()
+                return result, m
             except AnalyzeError:
                 raise
             except Exception as e:  # SDK 예외 종류가 버전마다 달라 여기서 분류한다.
                 last, kind = e, _kind(e)
-                if kind == "busy":
+                previous_kind = kind
+                if kind in ("busy", "timeout", "output"):
                     continue  # 같은 모델로 다시
                 if kind in ("quota", "model"):
                     break  # 한도·모델 문제는 모델별이라 다음 모델로
                 raise AnalyzeError(_MESSAGES.get(kind) or f"Gemini 호출에 실패했습니다: {e}") from e
     kind = _kind(last) if last else "busy"
-    raise AnalyzeError(f"{_MESSAGES.get(kind, _MESSAGES['busy'])}\n(자세한 내용: {last})") from last
+    raise AnalyzeError(_MESSAGES.get(kind, _MESSAGES['busy'])) from last
 
 
 # ----- 성취기준으로 새 학습지 만들기 (학부모 모드) -----
@@ -462,12 +542,13 @@ def _generation_client(api_key: str):
     from google import genai
     from google.genai import types
 
-    options = {"timeout": REQUEST_TIMEOUT * 1000}
+    options = {"timeout": GENERATION_REQUEST_TIMEOUT * 1000}
     if "retry_options" in types.HttpOptions.model_fields:
-        options["retry_options"] = {"attempts": 0}
+        options["retry_options"] = {"attempts": 1}
     return genai.Client(api_key=api_key.strip(), http_options=options)
 
 
+@with_generation_budget
 def _generate_for_request(client, model: str, prompt: str, *, request: str, context: str,
                           n_questions: int, kind: str = "standard", plan_activity: bool = True,
                           force_context: bool = False, task_type: str | None = None,
@@ -478,8 +559,7 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
         from . import activity
 
         _notify("좋아하는 주제와 배울 내용을 엮어 활동을 설계하는 중…")
-        preferred = "gemini-3.8-flash" if model == MODELS[0] else model
-        order = list(dict.fromkeys([preferred, "gemini-3.6-flash", "gemini-3.8-flash"]))
+        order = _design_order(model)
         plan_prompt = activity.build_prompt(context=context, request=request, n_questions=n_questions,
                                             kind=kind, force_context=force_context)
 
@@ -506,10 +586,10 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
                 except (AnalyzeError, ValueError, TypeError) as exc:
                     raise _BrokenOutput("활동 내용 검토 결과를 읽지 못했습니다.") from exc
 
-            return _with_retry(list(dict.fromkeys([preferred_model, *order])), call)[0]
+            return _with_retry(list(dict.fromkeys([preferred_model, *order])), call, stage="2단계 · 내용 검토")[0]
 
         try:
-            (plan, ws), used = _with_retry(order, design)
+            (plan, ws), used = _with_retry(order, design, stage="1단계 · 초안 설계")
             if ws is not None:
                 issues = inspect(plan, used)
                 for _ in range(2):  # 수정 중 새 오류가 생기면 한 번 더 고치되 무한 호출하지 않는다.
@@ -518,7 +598,7 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
                     _notify("검토에서 찾은 수량·문제 연결을 자료와 정답까지 함께 고치는 중…")
                     instruction = activity.repair_prompt(plan_prompt, plan, issues)
                     (plan, ws), used = _with_retry(list(dict.fromkeys([used, *order])),
-                                                 lambda chosen: design(chosen, instruction))
+                                                 lambda chosen: design(chosen, instruction), stage="검토 후 수정")
                     if ws is None:
                         raise AnalyzeError("수량이나 문제 연결을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
                     issues = inspect(plan, used)
@@ -537,8 +617,7 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
     """공동 상황을 강요하지 않고 네 유형의 새 문제를 유형별로 검토한다."""
     from . import activity, content_review
 
-    preferred = "gemini-3.8-flash" if model == MODELS[0] else model
-    order = list(dict.fromkeys([preferred, "gemini-3.6-flash", "gemini-3.8-flash"]))
+    order = _design_order(model)
 
     def design(chosen, instruction):
         raw = _generate(client, chosen, instruction, [], response_schema())
@@ -550,7 +629,7 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
         except (AnalyzeError, ValueError, TypeError, AttributeError) as exc:
             raise _BrokenOutput("새 학습지 응답을 읽지 못했습니다.") from exc
 
-    ws, used = _with_retry(order, lambda chosen: design(chosen, prompt))
+    ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기")
     for attempt in range(3):
         _notify("유형에 맞는 구성과 수량·자료·정답을 검토하는 중…")
         instruction = content_review.prompt(ws, context=context, request=request, kind=kind, n=n_questions)
@@ -565,7 +644,7 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
             except (AnalyzeError, ValueError, TypeError) as exc:
                 raise _BrokenOutput("내용 검토 결과를 읽지 못했습니다.") from exc
 
-        issues, _ = _with_retry(list(dict.fromkeys([used, *order])), inspect)
+        issues, _ = _with_retry(list(dict.fromkeys([used, *order])), inspect, stage="2단계 · 내용 검토")
         issues = content_review.structure_issues(ws, kind, n_questions) + issues
         if not issues:
             return ws.model_dump_json(), used
@@ -573,7 +652,7 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
             raise AnalyzeError("유형에 맞는 구성이나 내용을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
         _notify("검토에서 찾은 문제를 자료·문항·정답까지 함께 고치는 중…")
         instruction = content_review.repair_prompt(prompt, ws, issues)
-        ws, used = _with_retry(list(dict.fromkeys([used, *order])), lambda chosen: design(chosen, instruction))
+        ws, used = _with_retry(list(dict.fromkeys([used, *order])), lambda chosen: design(chosen, instruction), stage="검토 후 수정")
 
 
 def generate_for_standards(
@@ -738,6 +817,7 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
 from .fusion import TASK_TYPES
 
 
+@with_generation_budget
 def suggest_styling_prompt(*, api_key: str, worksheet: Worksheet, include_answers: bool = False,
                            reference: bool = False, output: str = "html", model: str = MODELS[0]) -> str:
     """수정이 끝난 현재 내용으로 외부 꾸미기 요청문만 추천한다. 학습지를 바꾸지 않는다."""
@@ -771,7 +851,7 @@ ChatGPT에 복사할 구체적인 꾸미기 요청문을 한국어로 쓴다. �
         except (AnalyzeError, ValueError, TypeError, KeyError) as exc:
             raise _BrokenOutput("맞춤 요청문을 읽지 못했습니다.") from exc
 
-    return _with_retry(list(dict.fromkeys([model, *MODELS])), call)[0]
+    return _with_retry(_design_order(model), call)[0]
 
 
 
