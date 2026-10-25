@@ -380,7 +380,7 @@ with st.sidebar:
     with st.expander("⚙️ 설정"):
         model = st.selectbox(
             "AI 모델", llm.GENERATION_MODELS, format_func=lambda m: llm.MODEL_LABELS.get(m, m),
-            help="고른 모델이 붐비거나 오래 걸리면 다른 모델로 자동으로 바꿔 만듭니다.",
+            help="기본은 3.5 Flash Lite입니다. 모든 모델에서 같은 내용 검토를 거칩니다. 고른 모델이 붐비거나 오래 걸리면 다른 모델로 바꿔 시도합니다.",
         )
     st.caption("도움말: 막히면 🏠 처음 화면으로 돌아가 다시 시작해도 만들던 학습지는 남아 있어요.")
 

@@ -24,15 +24,15 @@ from .theme import Theme
 # 3.8·3.7-flash는 붐빌 때 거절(503)까지 2~3분이 걸렸고, 무료 키는 3.8-flash가 하루 20회로 제한된다.
 MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash"]
 MODEL_LABELS = {
-    "gemini-3.5-flash-lite": "빠름 · gemini-3.5-flash-lite (추천)",
+    "gemini-3.5-flash-lite": "기본 · gemini-3.5-flash-lite (추천)",
     "gemini-3.8-flash": "정밀 · gemini-3.8-flash (응답이 늦을 수 있어요)",
-    "gemini-3.6-flash": "기본 · gemini-3.6-flash (추천)",
+    "gemini-3.6-flash": "정밀 · gemini-3.6-flash (응답이 늦을 수 있어요)",
 }
 THINKING = "high"  # 계산·사실 실수를 줄이려면 많이 생각하게 한다 (lite 기준 시간 차이는 수십 초 이내)
 REQUEST_TIMEOUT = 100  # 초. 통신 대기 제한이며, SDK 내부 재시도 때문에 모델 대체까지는 더 걸릴 수 있다.
 GENERATION_REQUEST_TIMEOUT = 60
 GENERATION_TIME_BUDGET = 150
-GENERATION_MODELS = ["gemini-3.6-flash", "gemini-3.8-flash"]
+GENERATION_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"]
 _budget_deadline: ContextVar = ContextVar("generation_deadline", default=None)
 _budget_started: ContextVar = ContextVar("generation_started", default=None)
 RETRY_WAITS: tuple[int, ...] = ()  # 같은 모델 재시도 없음: 붐빌 때는 거절까지 오래 걸려서 다른 모델이 빠르다
@@ -95,8 +95,7 @@ def _remaining_time() -> float | None:
 
 
 def _design_order(model: str) -> list[str]:
-    preferred = GENERATION_MODELS[0] if model == MODELS[0] else model
-    return list(dict.fromkeys([preferred, *GENERATION_MODELS]))
+    return list(dict.fromkeys([model, *GENERATION_MODELS]))
 
 
 @dataclass
@@ -652,10 +651,8 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
     ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기")
     for attempt in range(3):
         _notify("유형에 맞는 구성과 수량·자료·정답을 검토하는 중…")
-        instruction = content_review.prompt(ws, context=context, request=request, kind=kind, n=n_questions)
-        if task_type is not None:
-            from .fusion import review_rule
-            instruction += review_rule(task_type, subjects or [], kind)
+        instruction = content_review.prompt(ws, context=context, request=request, kind=kind, n=n_questions,
+                                           task_type=task_type, subjects=subjects)
 
         def inspect(chosen):
             raw = _generate(client, chosen, instruction, [], activity.review_schema())

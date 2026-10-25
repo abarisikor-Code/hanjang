@@ -17,6 +17,38 @@ def issue():
 
 
 class ContentReviewTests(unittest.TestCase):
+    def test_review_sees_printed_blanks_and_separate_teacher_answers(self):
+        from worksheet_maker import content_review
+        from worksheet_maker.schema import Block, Worksheet
+        ws = Worksheet(title='빈칸 검토', blocks=[
+            Block(type='fill_blank', body='13 × 3 = [[39]]', solution='13을 세 번 더해요.'),
+            Block(type='drill', items=['14 × 2 = [[28]]']),
+            Block(type='table', rows=[['수량'], ['[[17]]권']]),
+            Block(type='short_answer', body='39권이 필요합니다. 30권에서 몇 권 부족한가요?', answer='9권')])
+        before = ws.model_dump_json()
+        instruction = content_review.prompt(ws, context='3학년', request='', kind='standard', n=3)
+        shown = json.loads(instruction.split('검토할 학습지:\n', 1)[1])
+        self.assertEqual(shown['blocks'][0]['body'], '13 × 3 = (    )')
+        self.assertEqual(shown['blocks'][0]['answer'], '39')
+        self.assertEqual(shown['blocks'][1]['items'], ['14 × 2 = (    )'])
+        self.assertIn('28', shown['blocks'][1]['answer'])
+        self.assertEqual(shown['blocks'][2]['rows'], [['수량'], ['(    )권']])
+        self.assertIn('39권이 필요', shown['blocks'][3]['body'])  # 실제 인쇄된 수는 가리지 않는다.
+        self.assertIn('학생 문제지에 보이지 않는', instruction)
+        self.assertEqual(ws.model_dump_json(), before)
+
+    def test_fusion_review_uses_task_rules_without_generic_inquiry_skeleton(self):
+        from worksheet_maker import content_review
+        from worksheet_maker.schema import Worksheet
+        for task in ('project', 'story', 'inquiry'):
+            instruction = content_review.prompt(Worksheet(title='융합'), context='4학년', request='',
+                kind='inquiry', n=4, task_type=task, subjects=['수학', '사회'])
+            self.assertIn('반드시 지킬 융합 과제 형태', instruction)
+            self.assertNotIn('drawing(관찰한 것', instruction)
+            self.assertNotIn('나머지 3~5행은 칸을 빈 문자열로', instruction)
+        ordinary = content_review.prompt(Worksheet(title='단일'), context='4학년', request='', kind='inquiry', n=4)
+        self.assertIn('drawing(관찰한 것', ordinary)
+
     def test_generation_sdk_limits_internal_retries_on_a_busy_response(self):
         response = httpx.Response(503, json={'error': {'code': 503, 'message': 'busy'}},
                                   request=httpx.Request('POST', 'https://example.invalid'))
@@ -78,14 +110,14 @@ class ContentReviewTests(unittest.TestCase):
         self.assertEqual(json.loads(raw)['title'], fixed['title'])
         self.assertEqual(call.call_count, 6)
 
-    def test_failed_review_is_not_treated_as_approval_or_downgraded_to_lite(self):
+    def test_failed_review_is_not_treated_as_approval_with_any_model(self):
         with patch.object(llm, '_generate', side_effect=[json.dumps(sample_plan()),
-                llm._BrokenOutput('검토 응답 없음'), llm._BrokenOutput('검토 응답 없음')]) as call:
+                llm._BrokenOutput('검토 응답 없음'), llm._BrokenOutput('검토 응답 없음'), llm._BrokenOutput('검토 응답 없음')]) as call:
             with self.assertRaises(llm.AnalyzeError):
                 llm._generate_for_request(None, llm.MODELS[0], '지시', request='가족 저녁 식사',
                     context='3학년', n_questions=2, kind="inquiry")
         self.assertEqual([c.args[1] for c in call.call_args_list],
-                         ['gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-3.8-flash'])
+                         ['gemini-3.5-flash-lite', *llm.GENERATION_MODELS])
 
     def test_malformed_review_is_not_an_empty_issue_list(self):
         bad_results = [{}, {'issues': None}, {'issues': [dict(issue(), question=True)]},

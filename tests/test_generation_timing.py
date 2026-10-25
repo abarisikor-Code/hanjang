@@ -85,10 +85,11 @@ class GenerationTimingTests(unittest.TestCase):
                 self.assertIn('내용 검토', notices[-1])
                 self.assertNotIn('붐벼서', notices[-1])
 
-    def test_default_design_does_not_override_fast_choice_with_38(self):
-        self.assertEqual(llm._design_order(llm.MODELS[0]), ['gemini-3.6-flash', 'gemini-3.8-flash'])
-        self.assertEqual(llm._design_order('gemini-3.8-flash'), ['gemini-3.8-flash', 'gemini-3.6-flash'])
-        self.assertNotIn(llm.MODELS[0], llm.GENERATION_MODELS)
+    def test_selected_model_is_first_and_available_models_are_not_excluded(self):
+        self.assertEqual(llm._design_order(llm.MODELS[0]), llm.GENERATION_MODELS)
+        self.assertEqual(llm._design_order('gemini-3.8-flash'), ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'])
+        self.assertEqual(llm._design_order('gemini-3.6-flash'), ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'])
+        self.assertEqual(llm.GENERATION_MODELS[0], 'gemini-3.5-flash-lite')
 
     def test_sdk_uses_single_standard_request_for_timeout_and_valid_json(self):
         request = httpx.Request('POST', 'https://example.invalid')
