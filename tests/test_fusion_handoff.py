@@ -97,3 +97,27 @@ class HandoffTests(unittest.TestCase):
         old = handoff.fingerprint(ws, False, False, 'image')
         with patch.object(handoff, 'STYLING_PROMPT_VERSION', handoff.STYLING_PROMPT_VERSION + 1):
             self.assertNotEqual(old, handoff.fingerprint(ws, False, False, 'image'))
+
+    def test_ten_numbered_questions_are_not_recounted_from_subitems(self):
+        ws = Worksheet(title='가상 자료 비교', blocks=[
+            Block(type='reading', body='가상 자료를 살펴보세요.'),
+            Block(type='table', rows=[['요일','무게'],['화요일','1.75'],['목요일','2.05']]),
+            *[Block(type='short_answer', body=f'가상 질문 {i}', answer='교사용답') for i in range(1,10)],
+            Block(type='ox', title='맞는지 판단하세요.', items=['가상 진술 가', '가상 진술 나'], answer='(1) O (2) X')])
+        before = ws.model_dump_json()
+        for output in ('html','image'):
+            request = handoff.fixed_instructions(False,False,output,worksheet=ws)
+            self.assertIn('1~10번, 총 10개', request)
+            self.assertIn('다음 쪽은 6번부터', request)
+            self.assertIn('하위 문항', request)
+            self.assertIn('문장·지문·선택지·O/X 진술', request)
+            self.assertIn('소수 자릿수', request)
+            self.assertIn('페이지별 문항 번호', request)
+        with patch.object(llm,'_generation_client'), patch.object(llm,'_generate',return_value=json.dumps({
+                'request':'가상 자료를 초록색 숲의 콘셉트로 꾸미고 원문의 문항은 그대로 옮겨 주세요.'})) as call:
+            request = llm.suggest_styling_prompt(api_key='가짜 키',worksheet=ws)
+        self.assertIn('1~10번, 총 10개', request)
+        self.assertIn('큰 문항 번호는 원본 그대로 이어지고', call.call_args.args[2])
+        self.assertIn('1.75',call.call_args.args[2])
+        self.assertNotIn('교사용답',call.call_args.args[2])
+        self.assertEqual(ws.model_dump_json(),before)

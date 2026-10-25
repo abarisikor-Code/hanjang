@@ -2093,7 +2093,7 @@ def handoff_panel(ws: Worksheet) -> None:
 
     with st.expander("✨ ChatGPT로 더 예쁘게"):
         st.write("문제 수정을 마쳤다면, ChatGPT에서 내용에 어울리는 컬러 삽화·캐릭터가 있는 학습지로 꾸며 보세요.")
-        st.caption("삽화와 답 쓸 공간에 맞춰 쪽수는 자연스럽게 늘어나요. 문제 내용과 순서는 그대로 유지해요.")
+        st.caption("삽화와 답 쓸 공간에 맞춰 쪽수는 자연스럽게 늘려요. 문제·표·수치는 원문 그대로, 번호는 다음 쪽에도 이어가도록 요청해요.")
         include_answers = st.toggle("문제와 답지 모두 꾸미기", value=False, key="handoff_answers")
         reference = st.toggle("참고할 PDF·사진 양식이 있어요", value=False, key="handoff_reference")
         output = st.radio("받고 싶은 결과", ["image", "html"], horizontal=True, key="handoff_output",
@@ -2118,7 +2118,7 @@ def handoff_panel(ws: Worksheet) -> None:
                 matched = True
             except llm.AnalyzeError as exc:
                 st.error(str(exc))
-        request = cached["text"] if matched else handoff.fixed_instructions(include_answers, reference, output)
+        request = cached["text"] if matched else handoff.fixed_instructions(include_answers, reference, output, worksheet=ws)
         st.caption("맞춤 요청문" if matched else "기본 요청문 — AI 호출 없이 바로 쓸 수 있어요.")
         st.code(request, language=None, wrap_lines=True)
         st.caption("위 요청문 오른쪽 위의 복사 버튼을 누르세요.")
