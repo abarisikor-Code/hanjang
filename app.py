@@ -2092,11 +2092,12 @@ def handoff_panel(ws: Worksheet) -> None:
     from worksheet_maker import handoff
 
     with st.expander("✨ ChatGPT로 더 예쁘게"):
-        st.write("한장에서 문제 수정을 마친 뒤, ChatGPT에서 인쇄 모양을 꾸며 보세요.")
+        st.write("문제 수정을 마쳤다면, ChatGPT에서 내용에 어울리는 컬러 삽화·캐릭터가 있는 학습지로 꾸며 보세요.")
+        st.caption("삽화와 답 쓸 공간에 맞춰 쪽수는 자연스럽게 늘어나요. 문제 내용과 순서는 그대로 유지해요.")
         include_answers = st.toggle("문제와 답지 모두 꾸미기", value=False, key="handoff_answers")
         reference = st.toggle("참고할 PDF·사진 양식이 있어요", value=False, key="handoff_reference")
-        output = st.radio("받고 싶은 결과", ["html", "image"], horizontal=True, key="handoff_output",
-                          format_func=lambda v: "글자·수식을 유지한 인쇄용 학습지 (권장)" if v == "html" else "학습지 전체를 그림으로")
+        output = st.radio("받고 싶은 결과", ["image", "html"], horizontal=True, key="handoff_output",
+                          format_func=lambda v: "컬러 삽화 학습지 이미지 (권장)" if v == "image" else "글자·수식을 유지한 인쇄용 HTML")
         if reference:
             st.caption("참고 양식은 아래 전달 파일과 함께 ChatGPT에 직접 첨부하세요. 한장에는 다시 올리지 않아도 돼요.")
         if output == "image":
@@ -2107,7 +2108,7 @@ def handoff_panel(ws: Worksheet) -> None:
         if cached and not matched:
             st.caption("내용이나 선택이 바뀌어 이전 맞춤 요청문은 사용하지 않아요. 필요하면 새로 만들어 주세요.")
         if st.button("✨ 현재 내용을 읽고 맞춤 요청문 만들기", key="handoff_make_prompt",
-                     help="현재 학습지의 글과 표를 AI가 읽습니다. 이미지 원본은 보내지 않고, API 사용량이 추가됩니다."):
+                     help="현재 내용에 맞는 콘셉트·색감·삽화·배치의 요청문을 AI가 만듭니다. 이미지 원본은 보내지 않고, API 사용량이 추가됩니다."):
             try:
                 with ai_status("꾸미기 요청문을 만드는 중"):
                     request = llm.suggest_styling_prompt(api_key=api_key, worksheet=ws,

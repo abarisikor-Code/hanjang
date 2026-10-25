@@ -69,6 +69,30 @@ class HandoffTests(unittest.TestCase):
             result = llm.suggest_styling_prompt(api_key='가짜 키', worksheet=ws)
         self.assertIn('방금 고친 문항 내용', call.call_args.args[2])
         self.assertNotIn('고유정답', call.call_args.args[2])
+        self.assertIn('전체 콘셉트', call.call_args.args[2])
+        self.assertIn('캐릭터', call.call_args.args[2])
+        self.assertIn('현재 학습지의 구체적인 영역·문항', call.call_args.args[2])
         self.assertIn('정답·해설·풀이 시범·답지', result)
         with self.assertRaises(llm.AnalyzeError):
             llm.suggest_styling_prompt(api_key='', worksheet=ws)
+
+    def test_prompt_modes_keep_color_flexible_pages_and_answer_scope(self):
+        for answers in (False, True):
+            for reference in (False, True):
+                for output in ('image', 'html'):
+                    with self.subTest(answers=answers, reference=reference, output=output):
+                        text = handoff.fixed_instructions(answers, reference, output)
+                        self.assertIn('컬러', text)
+                        self.assertIn('쪽수에 제한을 두지 말고', text)
+                        self.assertIn('문항 수·순서·선택지·단위', text)
+                        self.assertNotIn('흑백 인쇄', text)
+                        self.assertIn('답지는 별도 쪽' if answers else '문제 부분만', text)
+                        self.assertIn('참고 양식 파일도' if reference else '직접 선택', text)
+                        self.assertIn('각 페이지 전체' if output=='image' else 'HTML 파일', text)
+        self.assertIn('원문에 이미 있는 개념 설명·풀이 예시는 그대로 보존', handoff.fixed_instructions(False,False,'image'))
+
+    def test_changed_prompt_policy_invalidates_existing_recommendation(self):
+        ws = self.worksheet()
+        old = handoff.fingerprint(ws, False, False, 'image')
+        with patch.object(handoff, 'STYLING_PROMPT_VERSION', handoff.STYLING_PROMPT_VERSION + 1):
+            self.assertNotEqual(old, handoff.fingerprint(ws, False, False, 'image'))
