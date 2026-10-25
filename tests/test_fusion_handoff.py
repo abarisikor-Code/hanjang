@@ -84,6 +84,7 @@ class HandoffTests(unittest.TestCase):
                         text = handoff.fixed_instructions(answers, reference, output)
                         self.assertIn('컬러', text)
                         self.assertIn('쪽수에 제한을 두지 말고', text)
+                        self.assertIn('실제 쪽 배정과 전체 쪽수는 고정하지 않으며', text)
                         self.assertIn('문항 수·순서·선택지·단위', text)
                         self.assertNotIn('흑백 인쇄', text)
                         self.assertIn('답지는 별도 쪽' if answers else '문제 부분만', text)
