@@ -6,7 +6,7 @@ import re
 from .schema import QUESTION_TYPES, Worksheet
 
 _BLANK = re.compile(r"\[\[(.*?)\]\]", re.DOTALL)
-STYLING_PROMPT_VERSION = 3
+STYLING_PROMPT_VERSION = 4
 
 
 def worksheet_for_handoff(ws: Worksheet, include_answers: bool = False) -> Worksheet:

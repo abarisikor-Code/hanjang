@@ -15,10 +15,11 @@ from markupsafe import Markup
 from pydantic import ValidationError
 
 from .forms import Form
+from .illustration import Decoration
 from .schema import Worksheet
 from .theme import Theme
 
-FORMAT_VERSION = 3  # 2: 내 학습지 양식(form) 추가, 3: 한글 양식(form.doc). 예전 파일도 그대로 열린다.
+FORMAT_VERSION = 4  # 4: 원문과 분리한 장식 삽화. 예전 파일도 그대로 열린다.
 _DATA_TAG = re.compile(
     r'<script[^>]*\bid=["\']hanjang-data["\'][^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE
 )
@@ -36,10 +37,11 @@ class Saved:
     footer: str | None = None
     show_answers: bool | None = None
     form: Form | None = None
+    decoration: Decoration | None = None
 
 
 def pack(ws: Worksheet, theme: Theme, level: str, footer: str, show_answers: bool = False,
-         form: Form | None = None) -> Markup:
+         form: Form | None = None, decoration: Decoration | None = None) -> Markup:
     """HTML <script> 안에 넣을 JSON. '<'를 이스케이프해 </script>로 끊기지 않게 한다."""
     data = {
         "app": "hanjang",
@@ -50,6 +52,7 @@ def pack(ws: Worksheet, theme: Theme, level: str, footer: str, show_answers: boo
         "theme": theme.model_dump(),
         "worksheet": ws.model_dump(),
         "form": form.model_dump() if form else None,
+        "decoration": decoration.model_dump() if decoration else None,
     }
     text = json.dumps(data, ensure_ascii=False, indent=1)
     return Markup(text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
@@ -85,6 +88,7 @@ def unpack(filename: str, data: bytes) -> Saved:
                 footer=obj.get("footer") if isinstance(obj.get("footer"), str) else None,
                 show_answers=obj.get("show_answers") if isinstance(obj.get("show_answers"), bool) else None,
                 form=Form.model_validate(form) if isinstance(form, dict) else None,
+                decoration=Decoration.model_validate(obj["decoration"]) if isinstance(obj.get("decoration"), dict) else None,
             )
         return Saved(worksheet=Worksheet.model_validate(obj))  # 예전 '구조(JSON) 저장' 파일
     except ValidationError as e:

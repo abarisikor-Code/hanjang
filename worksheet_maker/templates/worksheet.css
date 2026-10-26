@@ -1,4 +1,4 @@
-/* ===== A4 흑백 인쇄 학습지 공통 규격 =====
+/* ===== A4 인쇄 학습지 공통 규격 =====
    값은 모두 변수로 받는다: 학년(--base, --lh, --line-h), 테마(--b1~4 선 굵기, --radius, --shade, --gap, --font-*).
    테마별 모양 차이는 body의 hd-*, sec-*, qn-*, tag-* 클래스로만 둔다. */
 
@@ -471,3 +471,25 @@ sup { font-size: .7em; line-height: 0; }
 .wt-game .ws-body { display: grid; grid-template-columns: 1fr 1fr; gap: calc(3mm * var(--gap)) 5mm; }
 .wt-game .ws-body > :not(.q) { grid-column: 1 / -1; }
 .wt-game .ws-body > * { margin: 0; }
+
+/* 장식 삽화: 원문 영역과 겹치지 않는다. 컬러는 정해진 팔레트만 쓴다. */
+.art-night { --art-main: #51409b; --art-sub: #187f9e; --art-light: #f1edfc; --art-edge: #b7a9e2; }
+.art-forest { --art-main: #167044; --art-sub: #a35a06; --art-light: #eff9e8; --art-edge: #99cda4; }
+.art-ocean { --art-main: #126b98; --art-sub: #147d6e; --art-light: #eaf8fc; --art-edge: #8dcdda; }
+.art-sunrise { --art-main: #a63e41; --art-sub: #9b5a11; --art-light: #fff1e9; --art-edge: #e8b0a3; }
+.illustration-hero { height: 42mm; margin: 0 0 4mm; overflow: hidden; border-radius: 5mm; background: var(--art-light); break-inside: avoid; }
+.illustration-hero.art-size-small { height: 28mm; }
+.illustration-hero.art-size-large { height: 56mm; }
+.illustration-hero img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.illustrated .page-frame { display: none; }
+.illustrated .ws-header { padding: 2mm 0 3mm; border: 0; border-bottom: 1mm solid var(--art-edge); text-align: left; }
+.illustrated .ws-title { color: var(--art-main); background: transparent; padding: 0; }
+.illustrated .ws-body { display: block; columns: auto; }
+.illustrated .sec { color: var(--art-main); background: var(--art-light); padding: 2mm 3mm; border: 0; border-left: 1.5mm solid var(--art-sub); border-radius: 0 4mm 4mm 0; }
+.illustrated .q { border: 0; border-bottom: .4mm solid var(--art-edge); border-radius: 0; background: transparent; padding: 2mm 0 4mm; margin-bottom: 4mm; }
+.illustrated .q-num { background: var(--art-main); color: white; border: 0; border-radius: 50%; min-width: 7mm; height: 7mm; line-height: 7mm; text-align: center; }
+.illustrated .q-num::after { content: none; }
+.illustrated .goals, .illustrated .concept, .illustrated .reading { border-color: var(--art-edge); background: var(--art-light); }
+.illustrated .tag { color: var(--art-main); background: white; border-color: var(--art-edge); }
+.illustrated .tbl th { background: var(--art-light); color: var(--art-main); }
+.illustrated .ak-header { border-color: var(--art-edge); color: var(--art-main); }

@@ -22,7 +22,7 @@ html, body { background: #fff; overflow: hidden; }
 .fr-notebook .page-frame { inset: 2.5mm auto 2.5mm 6mm; }
 .fr-notebook .sheet { padding-left: 14mm; }
 </style>{% endif %}
-<body class="{{ theme_classes }}">
+<body class="{{ theme_classes }}{% if decoration %} art-{{ decoration.palette }}{% endif %}">
 {% if show_print_button %}<button class="print-btn" type="button" onclick="window.print()">인쇄하기</button>{% endif %}
 {% if form_pages or doc %}
 {# 내 학습지 양식: 내용을 숨은 곳에 먼저 그린 뒤, 아래 스크립트가 양식 쪽의 칸에 차례로 옮겨 담는다 #}
@@ -62,8 +62,11 @@ html, body { background: #fff; overflow: hidden; }
 </section></template>
 {% endfor %}
 {% else %}
-<main class="sheet">
+<main class="sheet{% if decoration %} illustrated{% endif %}">
 <div class="page-frame" aria-hidden="true"></div>
+{% if decoration and decoration.image %}
+<div class="illustration-hero art-size-{{ decoration.size }}" aria-hidden="true"><img src="{{ decoration.image }}" alt=""></div>
+{% endif %}
 
 <header class="ws-header">
   <div class="ws-meta">
@@ -95,7 +98,8 @@ html, body { background: #fff; overflow: hidden; }
 {% endif %}
 
 {% if show_answers %}
-<main class="sheet answer-sheet">
+<main class="sheet answer-sheet{% if decoration and decoration.answers %} illustrated{% endif %}">
+  {% if decoration and decoration.answers and decoration.image %}<div class="illustration-hero art-size-small" aria-hidden="true"><img src="{{ decoration.image }}" alt=""></div>{% endif %}
   <header class="ak-header">
     <span class="tag">정답과 해설</span>
     <h2 class="ak-title">{{ ws.title }}</h2>
@@ -311,7 +315,16 @@ document.addEventListener("DOMContentLoaded", function () {  // 아래 hanjang-d
   }
   fit();
   paginate();
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(paginate);
+  function repaginate() {
+    document.documentElement.style.setProperty("--fit", "1");
+    paginate();
+    fit();
+  }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(repaginate);
+  Array.prototype.forEach.call(document.images, function (img) {
+    if (!img.complete) img.addEventListener("load", repaginate, {once: true});
+  });
+  window.addEventListener("beforeprint", repaginate);
   window.addEventListener("resize", fit);
 })();
 </script>

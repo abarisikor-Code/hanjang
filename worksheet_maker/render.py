@@ -12,6 +12,7 @@ from markupsafe import Markup, escape
 from . import docform
 from .diagrams import render_svg
 from .forms import Form
+from .illustration import Decoration
 from .saved import pack
 from .schema import IMAGE_SIZES, QUESTION_TYPES, Worksheet
 from .theme import Theme, body_classes, css_vars
@@ -148,6 +149,7 @@ def render(
     edit: bool = False,  # 앱 미리보기 전용: 학습지 위에서 바로 고치는 도구(끌어서 옮기기·도구 막대)를 넣는다
     per_page: int = PER_PAGE,  # 한 쪽에 문제 몇 개까지 (0이면 나누지 않는다). 초등학생이 풀 공간을 두려고.
     include_saved_data: bool = True,  # 외부 꾸미기 전달본에는 편집용 정답 데이터를 넣지 않는다.
+    decoration: Decoration | None = None,  # 내용과 분리된 대표 삽화와 컬러. 내 양식에는 적용하지 않는다.
 ) -> str:
     lv = dict(LEVELS[level_key(level)])
     theme = theme or Theme()
@@ -172,8 +174,12 @@ def render(
         numbered.append((b, num))
     extras = _extras(ws, numbered)
     form = None if thumbnail else form
+    saved_decoration = None if thumbnail else decoration
+    decoration = None if thumbnail or form else decoration
     # 한 쪽에 문제 몇 개까지: 쪽 나눔은 인쇄 크기로 재어야 해서 HTML 안의 스크립트가 한다 (연습 문제지·놀이는 촘촘한 그대로)
     paged = int(per_page) if per_page and not thumbnail and ws.kind not in ("drill", "game") else 0
+    if decoration:
+        paged = 10000  # 문항 개수 대신 삽화·답 공간의 실제 높이로 자연스럽게 늘린다.
     editable = edit and not thumbnail
 
     def block_attrs(i: int) -> Markup:
@@ -192,6 +198,7 @@ def render(
         footer=footer,
         theme_vars=Markup(css_vars(theme)),
         theme_classes=f"{body_classes(theme)} wt-{ws.kind}",
+        decoration=decoration,
         show_answers=show_answers,
         show_print_button=show_print_button and not thumbnail,
         thumbnail=thumbnail,
@@ -201,7 +208,7 @@ def render(
         form_pages=form_pages,
         doc=doc,
         form_has_title=doc["has_title"] if doc else any(r.kind == "title" for p in (form.pages if form else []) for r in p.regions),
-        saved_data=pack(ws, theme, level, footer, show_answers, form) if include_saved_data else "",
+        saved_data=pack(ws, theme, level, footer, show_answers, form, saved_decoration) if include_saved_data else "",
     )
 
 
