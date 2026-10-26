@@ -239,6 +239,8 @@ def set_worksheet(ws: Worksheet) -> None:
     st.session_state.pop("review_notes", None)  # 검토 결과는 그 학습지를 만든 직후에만 보여 준다
     st.session_state.pop("decoration", None)
     st.session_state.pop("art_error", None)
+    st.session_state.result_view = "edit"
+    st.session_state.art_step = 1
     st.session_state.art_epoch = st.session_state.get("art_epoch", 0) + 1
     data = ws.model_dump()
     for b in data["blocks"]:
@@ -2100,6 +2102,8 @@ def _repair_blocks() -> None:
 def _upload_illustration(key: str) -> None:
     uploaded = ss.get(key)
     if uploaded is None:
+        ss.decoration = None
+        ss.pop("art_error", None)
         return
     try:
         uri = images.to_data_uri(uploaded.getvalue())
@@ -2118,66 +2122,136 @@ def _art_option(field: str, key: str) -> None:
     ss.decoration = illustration.Decoration.model_validate(data).model_dump()
 
 
-def handoff_panel(ws: Worksheet) -> None:
+def _art_go(step: int) -> None:
+    ss.result_view = "illustration"
+    ss.art_step = step
+
+
+def _art_edit() -> None:
+    ss.result_view = "edit"
+
+
+def _art_request(ws: Worksheet) -> tuple[str, bool]:
     from worksheet_maker import handoff
 
-    with st.expander("✨ 삽화로 더 예쁘게 — 문제는 그대로"):
-        st.write("ChatGPT에서는 글자 없는 대표 삽화만 만들어요. 한장이 원본 문제·수식·보기·번호를 그대로 배치해요.")
-        st.markdown("**① 삽화 요청문 복사 → ② ChatGPT에서 그림 받기 → ③ 아래에 그림 올리기**")
-        concept = st.text_input("원하는 삽화 분위기 (선택)", placeholder="예: 달빛 천문대에서 망원경을 보는 토끼", key="art_concept")
-        signature = handoff.fingerprint(ws, False, False, "illustration") + hashlib.sha256(concept.encode()).hexdigest()
-        cached = ss.get("art_prompt", {})
-        matched = cached.get("signature") == signature
-        if st.button("✨ 현재 내용을 읽고 맞춤 삽화 요청문 만들기", key="handoff_make_prompt",
-                     help="AI가 내용에 맞는 그림 콘셉트를 구체화합니다. API 사용량이 추가돼요. 아래 기본 요청문은 키 없이도 쓸 수 있어요."):
-            try:
-                with ai_status("삽화 요청문을 만드는 중"):
-                    request = llm.suggest_styling_prompt(api_key=api_key, worksheet=ws, output="illustration", model=model, concept=concept)
-                cached = {"signature": signature, "text": request}
-                ss.art_prompt = cached
-                matched = True
-            except llm.AnalyzeError as exc:
-                st.error(str(exc))
-        request = cached["text"] if matched else illustration.prompt(ws, concept)
-        st.caption("맞춤 삽화 요청문" if matched else "기본 삽화 요청문 — 키 없이 바로 복사할 수 있어요.")
+    concept = ss.get("art_concept_value", "")
+    signature = handoff.fingerprint(ws, False, False, "illustration") + hashlib.sha256(concept.encode()).hexdigest()
+    cached = ss.get("art_prompt", {})
+    matched = cached.get("signature") == signature
+    return (cached["text"] if matched else illustration.prompt(ws, concept)), matched
+
+
+def handoff_panel(ws: Worksheet) -> None:
+    """내용 편집과 분리한, ChatGPT를 오가는 네 단계의 화면."""
+    from worksheet_maker import handoff
+
+    art = current_decoration()
+    step = ss.get("art_step", 1)
+    if step == 4 and not (art and art.image):
+        step = ss.art_step = 3
+    st.button("← 문제 내용 편집으로", key="art_back_editor", on_click=_art_edit)
+    st.title("🎨 삽화로 학습지 꾸미기")
+    names = ["요청문 준비", "ChatGPT에서 그림 만들기", "한장에 그림 올리기", "완성본 확인·저장"]
+    st.markdown(" → ".join(f"**{i}. {name}**" if i == step else f"{i}. {name}" for i, name in enumerate(names, 1)))
+    st.progress(step / 4, text=f"{step}/4 · {names[step - 1]}")
+    st.caption("ChatGPT는 삽화를 만들고, 한장은 원본 문제·수식·보기·번호를 그대로 배치해요.")
+
+    if step == 1:
+        st.subheader("① 한장에서 삽화 요청문 준비하기")
+        st.write("문제 내용 수정을 마쳤다면, 아래 요청문을 복사하세요. 현재 학습지 내용이 함께 들어 있어요.")
+        st.text_input("원하는 삽화 분위기 (선택)", value=ss.get("art_concept_value", ""),
+                      placeholder="예: 달빛 천문대에서 망원경을 보는 토끼", key="art_concept",
+                      on_change=_sync, args=("art_concept_value", "art_concept"))
+        with st.expander("✨ AI로 그림 콘셉트를 더 구체화하기 (선택)"):
+            st.caption("기본 요청문도 바로 쓸 수 있어요. 아래 버튼은 API 사용량을 추가로 사용해요.")
+            if st.button("현재 내용을 읽고 맞춤 삽화 요청문 만들기", key="handoff_make_prompt"):
+                try:
+                    concept = ss.get("art_concept_value", "")
+                    with ai_status("삽화 요청문을 만드는 중"):
+                        request = llm.suggest_styling_prompt(api_key=api_key, worksheet=ws, output="illustration", model=model, concept=concept)
+                    signature = handoff.fingerprint(ws, False, False, "illustration") + hashlib.sha256(concept.encode()).hexdigest()
+                    ss.art_prompt = {"signature": signature, "text": request}
+                except llm.AnalyzeError as exc:
+                    st.error(str(exc))
+        request, matched = _art_request(ws)
+        st.caption("맞춤 삽화 요청문" if matched else "기본 삽화 요청문 — 키 없이 바로 쓸 수 있어요.")
         st.code(request, language=None, wrap_lines=True, height=260)
-        cols = st.columns(2)
-        cols[0].link_button("② ChatGPT 열기 ↗", "https://chatgpt.com/", width="stretch")
-        cols[1].download_button("삽화 요청문 파일 받기", request, file_name="삽화_요청문.txt", mime="text/plain", key="art_prompt_download", width="stretch")
-        st.caption("요청문에는 현재 수업 자료도 들어 있어요. ChatGPT에 그대로 붙여넣고, 글자 없는 가로 삽화 한 장을 받아 주세요. 학습지 전체를 다시 그리지 않아요.")
+        st.info("위 요청문 오른쪽 위의 복사 버튼을 누르세요. 다음 단계에서 ChatGPT에 붙여넣어요.")
+        st.download_button("요청문을 파일로 보관하기", request, file_name="삽화_요청문.txt", mime="text/plain", key="art_prompt_download")
+        st.button("요청문을 준비했어요 → ChatGPT 사용 안내", type="primary", key="art_next_2", on_click=_art_go, args=(2,))
+        st.button("이미 그림이 있어요 → 바로 올리기", key="art_skip_upload", on_click=_art_go, args=(3,))
+
+    elif step == 2:
+        st.subheader("② ChatGPT에서 삽화 한 장 만들기")
+        st.markdown("1. 아래 버튼으로 **ChatGPT를 열어요.**\n2. 복사한 요청문을 채팅창에 **붙여넣고 보내세요.**\n3. 완성된 그림을 **컴퓨터에 저장하세요.**")
+        st.link_button("ChatGPT 열기 ↗", "https://chatgpt.com/", type="primary", width="stretch")
+        st.info("그림을 저장한 뒤, 이 ‘한장’ 탭으로 돌아오세요. 다음 단계에서 그림을 올려요.")
+        st.caption("글자 없는 가로 대표 삽화 한 장을 받아요. 수업 내용은 요청문에 함께 들어 있어요.")
+        with st.expander("요청문을 다시 복사하고 싶어요"):
+            st.code(_art_request(ws)[0], language=None, wrap_lines=True, height=220)
+        st.button("그림을 저장했어요 → 한장에 올리기", type="primary", key="art_next_3", on_click=_art_go, args=(3,))
+        st.button("← 요청문 수정하기", key="art_prev_1", on_click=_art_go, args=(1,))
+
+    elif step == 3:
+        st.subheader("③ 한장에 삽화 올리기")
+        st.write("ChatGPT에서 저장한 그림 파일을 선택하세요. 한장이 원본 문제와 함께 배치해요.")
         epoch = ss.get("art_epoch", 0)
         upload_key = f"art_upload_{epoch}"
-        st.file_uploader("③ 받은 대표 삽화 올리기", type=images.ACCEPT, key=upload_key,
+        st.file_uploader("대표 삽화 파일 선택", type=images.ACCEPT, key=upload_key,
                          on_change=_upload_illustration, args=(upload_key,))
         if ss.get("art_error"):
             st.error(ss.art_error)
-        art = current_decoration()
         if art and art.image:
-            if current_form():
-                st.info("내 양식을 쓰고 있어 삽화 꾸미기는 잠시 쉬고 있어요. ‘모양 고르기 → 내 학습지 양식에 넣기’에서 양식을 끄면 적용돼요.")
-            a, b = st.columns(2)
-            palette_key, size_key, answers_key = (f"art_palette_{epoch}", f"art_size_{epoch}", f"art_answers_{epoch}")
-            a.selectbox("학습지 색감", list(illustration.PALETTES), index=list(illustration.PALETTES).index(art.palette),
-                        format_func=illustration.PALETTES.get, key=palette_key,
-                        on_change=_art_option, args=("palette", palette_key))
-            b.selectbox("대표 삽화 크기", list(illustration.SIZES), index=list(illustration.SIZES).index(art.size),
-                        format_func=illustration.SIZES.get, key=size_key,
-                        on_change=_art_option, args=("size", size_key))
-            st.toggle("답지도 같은 삽화·컬러로 꾸미기", value=art.answers, key=answers_key,
-                      on_change=_art_option, args=("answers", answers_key))
-            st.caption("문제와 답지는 별도 쪽이에요. 삽화는 상단에 따로 넣고, 문제와 답 공간에 맞춰 쪽수를 늘려요. 수직선·표·학습용 그림은 원본 그대로 사용해요.")
-            if st.button("삽화 꾸미기 빼기", key="art_remove"):
-                ss.decoration = None
-                ss.art_epoch = epoch + 1
-                st.rerun()
-            if not current_form():
-                st.success("삽화를 적용했어요. 아래 미리보기에서 확인하고 위의 ‘편집용 HTML 저장’을 누르세요. 다시 열 때도 삽화가 함께 남아요.")
-        st.caption("받은 삽화에 글자나 정답을 암시하는 내용이 없는지 확인해 주세요. 파일 선택과 전송은 ChatGPT에서 직접 해 주세요.")
+            st.image(art.image, caption="올린 대표 삽화", width="stretch")
+            st.success("삽화를 받았어요. 다음 단계에서 색감과 크기를 고르고 학습지 전체를 확인해요.")
+        st.caption("그림에 글자나 정답을 암시하는 내용이 없는지 확인해 주세요.")
+        if current_form():
+            st.info("지금은 내 양식을 쓰고 있어요. 삽화로 꾸미려면 아래 버튼으로 일반 학습지 배치를 선택하세요. 원본 양식 파일은 그대로 남아요.")
+            st.button("내 양식 대신 삽화 꾸미기 적용", key="art_disable_form", on_click=set_form, args=(None,))
+        st.button("삽화를 넣은 학습지 확인하기 →", type="primary", key="art_next_4", on_click=_art_go, args=(4,),
+                  disabled=not (art and art.image) or bool(current_form()))
+        st.button("← ChatGPT 사용 안내", key="art_prev_2", on_click=_art_go, args=(2,))
+
+    else:
+        st.subheader("④ 완성본 확인하고 저장하기")
+        if current_form():
+            st.info("내 양식을 사용 중이에요. 그림 올리기 단계에서 삽화 배치로 바꿔 주세요.")
+            st.button("그림 올리기 단계로", key="art_form_back", on_click=_art_go, args=(3,))
+            return
+        epoch = ss.get("art_epoch", 0)
+        a, b = st.columns(2)
+        palette_key, size_key, answers_key = (f"art_palette_{epoch}", f"art_size_{epoch}", f"art_answers_{epoch}")
+        a.selectbox("학습지 색감", list(illustration.PALETTES), index=list(illustration.PALETTES).index(art.palette),
+                    format_func=illustration.PALETTES.get, key=palette_key, on_change=_art_option, args=("palette", palette_key))
+        b.selectbox("대표 삽화 크기", list(illustration.SIZES), index=list(illustration.SIZES).index(art.size),
+                    format_func=illustration.SIZES.get, key=size_key, on_change=_art_option, args=("size", size_key))
+        st.toggle("정답·해설 쪽도 함께 저장", value=ss.answers_on, key="art_export_answers",
+                  on_change=_sync, args=("answers_on", "art_export_answers"))
+        st.toggle("답지도 같은 삽화·컬러로 꾸미기", value=art.answers, key=answers_key,
+                  on_change=_art_option, args=("answers", answers_key), disabled=not ss.answers_on)
+        html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=ss.answers_on,
+                      per_page=_per_page(), decoration=art)
+        filename = re.sub(r'[\\/:*?"<>|\s]+', '_', ws.title).strip('_') or '학습지'
+        st.download_button("💾 꾸민 학습지 저장", html, file_name=f"{filename}_삽화.html", mime="text/html",
+                           type="primary", width="stretch", key="art_save")
+        st.caption("아래 미리보기를 확인하고 저장하세요. 저장한 파일을 열어 ‘인쇄하기’를 누르면 돼요. PDF는 인쇄 창에서 ‘PDF로 저장’을 고르세요.")
+        st.caption("저장 파일을 한장에서 다시 열면 문제와 삽화를 함께 수정할 수 있어요. 삽화와 풀 공간에 따라 쪽수가 늘어나요.")
+        st.iframe(html, height=950)
+        st.button("← 다른 삽화로 바꾸기", key="art_replace", on_click=_art_go, args=(3,))
+        st.button("문제 내용을 더 고치기", key="art_edit_content", on_click=_art_edit)
+        if st.button("삽화 꾸미기 빼고 내용 편집으로", key="art_remove"):
+            ss.decoration = None
+            ss.art_epoch = epoch + 1
+            _art_edit()
+            st.rerun()
 
 
 def page_result() -> None:
     _repair_blocks()
     ws = current_worksheet()
+    if ss.get("result_view") == "illustration":
+        handoff_panel(ws)
+        return
     html = render(ws, level=level, footer=footer, theme=current_theme(), show_answers=show_answers, form=current_form(),
                   per_page=_per_page(), decoration=current_decoration())
     if ss.get("last_req"):
@@ -2216,7 +2290,15 @@ def page_result() -> None:
         if "open_msg" in ss:
             msg_kind, msg = ss.pop("open_msg")
             (st.success if msg_kind == "success" else st.error)(msg)
-    handoff_panel(ws)
+    with st.container(border=True):
+        st.subheader("🎨 문제 완성 다음에는, 삽화로 꾸며 보세요")
+        st.write("요청문 준비 → ChatGPT에서 그림 만들기 → 한장에 그림 올리기 → 완성본 저장")
+        st.caption("문제 내용을 다 고친 뒤 시작하세요. ChatGPT는 삽화를 만들고, 한장이 원본 문제를 그대로 배치해요.")
+        art = current_decoration()
+        ready = bool(art and art.image) and not current_form()
+        st.button("🎨 꾸민 학습지 확인·저장" if ready else "🎨 삽화 꾸미기 시작", key="art_start", type="primary",
+                  on_click=_art_go, args=(4 if ready else ss.get("art_step", 1),))
+        st.button("이미 그림이 있어요 → 바로 올리기", key="art_start_upload", on_click=_art_go, args=(3,))
     left, right = st.columns([1, 1.25], gap="large")
     with right:
         preview_editor(ws)  # 미리보기에서 옮기기·빼기를 하면 여기서 바꾸고 다시 그린다
@@ -2270,12 +2352,15 @@ def page_result() -> None:
 # 화면 고르기
 # =====================================================================
 page = ss.page
-if ss.get("_shown_page") != page:
+shown_page = (page, ss.get("result_view", "edit"), ss.get("art_step", 1)) if page == "result" else page
+if ss.get("_shown_page") != shown_page:
     # 화면이 바뀌면 맨 위부터 보이게 한다 (앞 화면에서 내려간 위치가 남지 않도록)
-    ss._shown_page = page
+    ss._shown_page = shown_page
     st.html(
-        "<script>for (const el of [document.querySelector('[data-testid=\"stMain\"]'), "
-        "document.scrollingElement]) { if (el) el.scrollTo({top: 0}); }</script>",
+        "<script>// " + hashlib.md5(str(shown_page).encode()).hexdigest() + "\n"
+        "(function () { function top() { for (const el of [document.querySelector('[data-testid=\"stMain\"]'), "
+        "document.scrollingElement]) { if (el) el.scrollTo({top: 0}); } } "
+        "top(); setTimeout(top, 150); setTimeout(top, 400); })();</script>",
         unsafe_allow_javascript=True,
     )
 if page == "home":
