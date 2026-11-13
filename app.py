@@ -42,7 +42,7 @@ def _fresh_worksheet_modules() -> None:
 
 _fresh_worksheet_modules()
 
-from worksheet_maker import curriculum, diagrams, docform, extract, forms, hwpx, images, illustration, kinds, llm, verify
+from worksheet_maker import curriculum, diagnostics, diagrams, docform, extract, forms, hwpx, images, illustration, kinds, llm, verify
 from worksheet_maker.render import LEVELS, PER_PAGE, grade_level, level_key, render
 from worksheet_maker.saved import LoadError, unpack
 from worksheet_maker.schema import BLOCK_TYPES, IMAGE_SIZES, QUESTION_TYPES, Block, Worksheet
@@ -1506,8 +1506,28 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
             "task_type": task_type, "theme_text": theme_text}
 
 
-@llm.with_generation_budget
 def _run(req: dict, checkpoint: dict | None = None) -> None:
+    if checkpoint and not api_key.strip():
+        st.error("왼쪽에 API 키를 입력한 뒤 검토를 다시 시도해 주세요. 초안은 계속 보관하고 있어요.")
+        return
+    previous = ss.get('generation_diagnostics') if checkpoint else None
+    with diagnostics.capture(APP_VERSION, previous) as report:
+        ss.generation_diagnostics = report
+        _run_generation(req, checkpoint)
+
+
+def _diagnostic_download(key: str) -> None:
+    report = ss.get('generation_diagnostics')
+    if not report or report.get('status') == 'running':
+        return
+    st.download_button('진단 기록 내려받기', data=diagnostics.dumps(report),
+                       file_name=f"한장_진단_{report['work_id'][:12]}.json",
+                       mime='application/json', key=key, on_click='ignore')
+    st.caption('단계별 시간·모델·오류 번호만 담아요. API 키와 문제 원문은 포함하지 않아요. 파일을 보내 주시면 원인 분석에 사용할 수 있어요. 자동 전송하지 않아요.')
+
+
+@llm.with_generation_budget
+def _run_generation(req: dict, checkpoint: dict | None = None) -> None:
     """학습지를 만들고 완성 화면으로 넘어간다. req는 다시 만들기에 그대로 쓰도록 저장한다."""
     kind = req["kind"]
     if checkpoint and not api_key.strip():
@@ -1534,20 +1554,23 @@ def _run(req: dict, checkpoint: dict | None = None) -> None:
                     n_questions=req["n_questions"], extra=req["extra"], model=model, kind=req.get("wkind", "standard"),
                 )
     except llm.ReviewInterrupted as e:
+        diagnostics.finish('pending_review')
         ss.pending_generation = {"request": copy.deepcopy(req), "checkpoint": e.checkpoint, "error": str(e)}
         ss.page = "review_pending"
         st.rerun()
     except llm.AnalyzeError as e:
+        diagnostics.finish('failed')
         if checkpoint:
             ss.pop("pending_generation", None)
             ss.generation_error = str(e)
             ss.page = "s3" if kind == "single" else "f3"
             st.rerun()
-        st.error(str(e))
-        return
+        ss.generation_error = str(e)
+        st.rerun()
     ss.pop("pending_generation", None)
     ws = result.worksheet
     fixes = list(llm.LAST_FIXES.get())  # 계산 문제: 프로그램이 다시 계산해 고친 정답
+    review_warning = False
     if req.get("review", True):
         if kind == "single":
             subject, limits = req["subject"], curriculum.limits(req["grade"], req["subject"], curriculum.find(req["codes"]))
@@ -1560,6 +1583,7 @@ def _run(req: dict, checkpoint: dict | None = None) -> None:
                                                  limits=limits, model=model)
             fixes += notes
         except llm.AnalyzeError as e:
+            review_warning = True
             fixes.append(f"AI 검토를 마치지 못했어요 — 문제와 정답을 한 번 더 확인해 주세요. ({str(e).splitlines()[0]})")
     set_worksheet(ws)
     ss.review_notes = (bool(req.get("review", True)), fixes)
@@ -1569,6 +1593,7 @@ def _run(req: dict, checkpoint: dict | None = None) -> None:
     ss.open_id = None
     ss.p_msg = ("success", f"'{ws.title}' 학습지를 만들었어요!")
     ss.page = "result"
+    diagnostics.finish('success_with_review_warning' if review_warning else 'success')
     st.rerun()
 
 
@@ -1581,6 +1606,7 @@ def page_review_pending() -> None:
     st.title("🕒 초안은 보관했어요")
     st.write("내용 검토 또는 수정 요청이 멈췄어요. 만든 내용을 처음부터 다시 생성하지 않고 이어서 검토할 수 있어요.")
     st.error(pending["error"])
+    _diagnostic_download('diagnostic_pending')
     req = pending["request"]
     st.caption(f"초등 {req['grade']}학년 · 요청 문항 {req['n_questions']}개 · 아직 검토를 마치지 않은 초안")
     st.info("잠시 후 아래 버튼을 눌러 주세요. 새 대기 시간으로 검토를 이어가며, 검토를 통과해야 완성본을 보여줘요. 수정 중 멈췄다면 남은 수정부터 이어가요.")
@@ -2391,6 +2417,10 @@ def page_result() -> None:
 page = ss.page
 if "generation_error" in ss:
     st.error(ss.pop("generation_error"))
+    _diagnostic_download('diagnostic_failure')
+elif page != 'review_pending' and ss.get('generation_diagnostics'):
+    with st.expander('최근 생성 작업의 진단 기록'):
+        _diagnostic_download('diagnostic_latest')
 if page != "review_pending" and ss.get("pending_generation"):
     st.info("검토를 기다리는 초안을 보관하고 있어요. 새 학습지를 만들면 보관한 초안은 교체돼요.")
     st.button("보관한 초안 검토 이어가기", key="pending_return", on_click=go, args=("review_pending",))

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from . import theme as theme_mod
 from . import curriculum
+from . import diagnostics
 from . import kinds as kinds_mod
 from .schema import BLOCK_TYPES, Worksheet, component_guide, response_schema
 from .theme import Theme
@@ -82,6 +83,7 @@ def generation_budget(seconds: float = GENERATION_TIME_BUDGET):
     started = time.perf_counter()
     deadline_token = _budget_deadline.set(started + seconds)
     started_token = _budget_started.set(started)
+    diagnostics.emit('start', budget_seconds=seconds)
     try:
         yield
     finally:
@@ -206,6 +208,9 @@ def _generate(client, model: str, prompt: str, files: list[Attachment], schema: 
         # 새 생성에서는 공개 generate_content 통신을 써 요청당 1회와 남은 시간을 적용한다.
         from google.genai import types
         timeout_ms = max(1, int(min(GENERATION_REQUEST_TIMEOUT, remaining) * 1000))
+        diagnostics.emit('request_settings', model=model, thinking=THINKING,
+                         timeout_seconds=timeout_ms / 1000, remaining_seconds=remaining,
+                         prompt_chars=len(prompt), attachment_count=len(files))
         config = {"response_mime_type": "application/json", "response_json_schema": schema,
                   "thinking_config": {"thinking_level": THINKING},
                   "http_options": {"timeout": timeout_ms, "retry_options": {"attempts": 1}}}
@@ -397,10 +402,16 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
         details = " / ".join(failures)
         return AnalyzeError(f"{message}\n\n확인 기록: {stage}" + (f" — {details}" if details else ""))
 
+    def record(event, model=None, **values):
+        deadline = _budget_deadline.get()
+        remaining = max(0, deadline - time.perf_counter()) if deadline is not None else None
+        diagnostics.emit(event, stage=stage, model=model, remaining_seconds=remaining, **values)
+
     def check_budget():
         try:
             _remaining_time()
         except AnalyzeError as exc:
+            record('budget_stop', outcome='timeout')
             raise failed(str(exc)) from exc
 
     for n, m in enumerate(order):
@@ -410,7 +421,9 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
                 delay = min(2 ** n, 8)
                 remaining = _remaining_time()
                 if remaining is not None and remaining <= delay + 1:
+                    record('budget_stop', outcome='timeout')
                     raise failed("다음 모델에 요청할 대기 시간이 부족해 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다.")
+                record('wait', wait_seconds=delay)
                 _notify(f"{stage} · 서버·연결 오류로 {delay}초 기다린 뒤 다음 모델로 전환합니다…")
                 time.sleep(delay)
                 check_budget()
@@ -422,17 +435,26 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
                     + (f" ({reasons.get(previous_kind, '앞 모델에서 오류가 났어요')} · 전체 {elapsed}초째에 전환)" if n else f" (전체 {elapsed}초째에 시작)"))
             try:
                 request_start = time.perf_counter()
+                response_done = False
+                record('request_start', m)
                 result = call(m)
+                response_done = True
+                record('request_end', m, outcome='success', duration_seconds=time.perf_counter() - request_start)
                 check_budget()
                 return result, m
             except _BudgetExpired as exc:
+                record('request_end', m, outcome='timeout', duration_seconds=time.perf_counter() - request_start)
+                record('budget_stop', m, outcome='timeout', duration_seconds=time.perf_counter() - request_start)
                 raise failed(str(exc)) from exc
             except AnalyzeError:
+                if not response_done:
+                    record('request_end', m, outcome='failed', duration_seconds=time.perf_counter() - request_start)
                 raise
             except Exception as e:  # SDK 예외 종류가 버전마다 달라 여기서 분류한다.
                 last, kind = e, _kind(e)
                 status = _status(e)
                 seconds = time.perf_counter() - request_start
+                record('request_end', m, outcome=kind, http_status=status, duration_seconds=seconds)
                 failures.append(f"{m}: {names.get(kind, names['other'])}"
                                 + (f" ({status})" if status else "") + f", {seconds:.1f}초")
                 previous_kind = kind
