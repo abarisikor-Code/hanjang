@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import re
 import time
@@ -56,6 +57,18 @@ class AnalyzeError(Exception):
     """사용자에게 그대로 보여줄 수 있는 분석 실패 메시지."""
 
 
+class ReviewInterrupted(AnalyzeError):
+    """완성본 대신 세션에 보관할 검토 대기 초안. 키·클라이언트는 담지 않는다."""
+
+    def __init__(self, message: str, checkpoint: dict):
+        super().__init__(message)
+        self.checkpoint = copy.deepcopy(checkpoint)
+
+
+class _BudgetExpired(AnalyzeError):
+    pass
+
+
 class _BrokenOutput(Exception):
     """응답이 중간에 끊긴 JSON. 다른 모델로 다시 시도한다."""
 
@@ -90,7 +103,7 @@ def _remaining_time() -> float | None:
         return None
     remaining = deadline - time.perf_counter()
     if remaining <= 0:
-        raise AnalyzeError("생성·검토에 정한 전체 대기 시간을 넘어서 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다. 잠시 후 다시 시도해 주세요.")
+        raise _BudgetExpired("생성·검토에 정한 전체 대기 시간을 넘어서 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다. 잠시 후 다시 시도해 주세요.")
     return remaining
 
 
@@ -188,6 +201,8 @@ def _schema(want_content: bool, want_style: bool) -> dict:
 def _generate(client, model: str, prompt: str, files: list[Attachment], schema: dict) -> str:
     remaining = _remaining_time()
     if remaining is not None:
+        if remaining < 1:
+            raise _BudgetExpired("남은 대기 시간이 너무 짧아 새 요청을 보내지 않고 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다.")
         # 새 생성에서는 공개 generate_content 통신을 써 요청당 1회와 남은 시간을 적용한다.
         from google.genai import types
         timeout_ms = max(1, int(min(GENERATION_REQUEST_TIMEOUT, remaining) * 1000))
@@ -391,6 +406,14 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
     for n, m in enumerate(order):
         for wait in (0, *RETRY_WAITS):
             check_budget()
+            if n and not wait and previous_kind == "busy":
+                delay = min(2 ** n, 8)
+                remaining = _remaining_time()
+                if remaining is not None and remaining <= delay + 1:
+                    raise failed("다음 모델에 요청할 대기 시간이 부족해 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다.")
+                _notify(f"{stage} · 서버·연결 오류로 {delay}초 기다린 뒤 다음 모델로 전환합니다…")
+                time.sleep(delay)
+                check_budget()
             if wait:
                 time.sleep(wait)
             budget_start = _budget_started.get()
@@ -402,6 +425,8 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
                 result = call(m)
                 check_budget()
                 return result, m
+            except _BudgetExpired as exc:
+                raise failed(str(exc)) from exc
             except AnalyzeError:
                 raise
             except Exception as e:  # SDK 예외 종류가 버전마다 달라 여기서 분류한다.
@@ -593,40 +618,16 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
                 raise _BrokenOutput("활동 설계를 학습지로 옮기지 못했습니다.") from exc
             return plan, ws
 
-        def inspect(plan, preferred_model):
-            instruction = activity.review_prompt(plan, context=context, request=request,
-                                                 kind=kind, n_questions=n_questions)
-
-            def call(chosen_model):
-                _notify("수량이 실제 상황에 맞는지, 문제가 의미 있게 이어지는지 검토하는 중…")
-                raw = _generate(client, chosen_model, instruction, [], activity.review_schema())
-                try:
-                    return activity.parse_review(_parse_json(raw), n_questions)
-                except (AnalyzeError, ValueError, TypeError) as exc:
-                    raise _BrokenOutput("활동 내용 검토 결과를 읽지 못했습니다.") from exc
-
-            return _with_retry(list(dict.fromkeys([preferred_model, *order])), call, stage="2단계 · 내용 검토")[0]
-
         try:
             (plan, ws), used = _with_retry(order, design, stage="1단계 · 초안 설계")
             if ws is not None:
-                issues = inspect(plan, used)
-                for _ in range(2):  # 수정 중 새 오류가 생기면 한 번 더 고치되 무한 호출하지 않는다.
-                    if not issues:
-                        break
-                    _notify("검토에서 찾은 수량·문제 연결을 자료와 정답까지 함께 고치는 중…")
-                    instruction = activity.repair_prompt(plan_prompt, plan, issues)
-                    (plan, ws), used = _with_retry(list(dict.fromkeys([used, *order])),
-                                                 lambda chosen: design(chosen, instruction), stage="검토 후 수정")
-                    if ws is None:
-                        raise AnalyzeError("수량이나 문제 연결을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
-                    issues = inspect(plan, used)
-                if issues:
-                    raise AnalyzeError("수량이나 문제 연결을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
+                return _review_saved_draft(client, dict(mode="activity", draft=plan, used=used, prompt=plan_prompt,
+                    request=request, context=context, n_questions=n_questions, kind=kind,
+                    task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]))
+        except ReviewInterrupted:
+            raise
         except AnalyzeError as exc:
             raise AnalyzeError(f"관심사를 엮는 활동 설계를 마치지 못했어요.\n{exc}") from exc
-        if ws is not None:
-            return ws.model_dump_json(), used
     return _generate_reviewed_worksheet(client, model, prompt, request=request, context=context,
                                        n_questions=n_questions, kind=kind, task_type=task_type, subjects=subjects)
 
@@ -649,27 +650,94 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
             raise _BrokenOutput("새 학습지 응답을 읽지 못했습니다.") from exc
 
     ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기")
-    for attempt in range(3):
-        _notify("유형에 맞는 구성과 수량·자료·정답을 검토하는 중…")
-        instruction = content_review.prompt(ws, context=context, request=request, kind=kind, n=n_questions,
-                                           task_type=task_type, subjects=subjects)
+    return _review_saved_draft(client, dict(mode="worksheet", draft=ws.model_dump(), used=used, prompt=prompt,
+        request=request, context=context, n_questions=n_questions, kind=kind,
+        task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]))
 
-        def inspect(chosen):
-            raw = _generate(client, chosen, instruction, [], activity.review_schema())
+
+def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
+    """초안 또는 마지막 수정본의 검토부터 이어간다. 수정 횟수와 미처리 지적도 유지한다."""
+    from . import activity, content_review
+
+    state = copy.deepcopy(checkpoint)
+    mode, kind, n = state["mode"], state["kind"], state["n_questions"]
+    if mode not in ("activity", "worksheet") or state["phase"] not in ("review", "repair") or not 0 <= state["attempt"] <= 2:
+        raise AnalyzeError("보관한 초안의 검토 정보를 읽지 못했어요. 설정을 확인하고 새로 만들어 주세요.")
+
+    def decode(data):
+        if mode == "activity":
+            ws = activity.to_worksheet(data, n, kind=kind)
+            if ws is None:
+                raise ValueError("공동 상황이 없습니다.")
+            return data, ws
+        ws = Worksheet.model_validate(data.get("worksheet", data))
+        ws.kind = kind
+        return ws.model_dump(), ws
+
+    _, ws = decode(state["draft"])
+    while True:
+        order = _design_order(state.get("preferred", state["used"]))
+        if state["phase"] == "review":
+            _notify("보관한 초안의 자료·문항·정답을 검토하는 중…")
+            instruction = (activity.review_prompt(state["draft"], context=state["context"], request=state["request"],
+                kind=kind, n_questions=n) if mode == "activity" else content_review.prompt(ws,
+                context=state["context"], request=state["request"], kind=kind, n=n,
+                task_type=state["task_type"], subjects=state["subjects"]))
+
+            def inspect(chosen):
+                raw = _generate(client, chosen, instruction, [], activity.review_schema())
+                try:
+                    return activity.parse_review(_parse_json(raw), n)
+                except (AnalyzeError, ValueError, TypeError) as exc:
+                    raise _BrokenOutput("내용 검토 결과를 읽지 못했습니다.") from exc
+
             try:
-                return activity.parse_review(_parse_json(raw), n_questions)
-            except (AnalyzeError, ValueError, TypeError) as exc:
-                raise _BrokenOutput("내용 검토 결과를 읽지 못했습니다.") from exc
+                issues, _ = _with_retry(order, inspect, stage="2단계 · 내용 검토")
+            except AnalyzeError as exc:
+                raise ReviewInterrupted(str(exc), state) from exc
+            if mode == "worksheet":
+                issues = content_review.structure_issues(ws, kind, n) + issues
+            if not issues:
+                return ws.model_dump_json(), state["used"]
+            if state["attempt"] == 2:
+                raise AnalyzeError("유형에 맞는 구성이나 내용을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
+            state.update(issues=issues, phase="repair")
 
-        issues, _ = _with_retry(list(dict.fromkeys([used, *order])), inspect, stage="2단계 · 내용 검토")
-        issues = content_review.structure_issues(ws, kind, n_questions) + issues
-        if not issues:
-            return ws.model_dump_json(), used
-        if attempt == 2:
-            raise AnalyzeError("유형에 맞는 구성이나 내용을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
         _notify("검토에서 찾은 문제를 자료·문항·정답까지 함께 고치는 중…")
-        instruction = content_review.repair_prompt(prompt, ws, issues)
-        ws, used = _with_retry(list(dict.fromkeys([used, *order])), lambda chosen: design(chosen, instruction), stage="검토 후 수정")
+        instruction = (activity.repair_prompt(state["prompt"], state["draft"], state["issues"])
+            if mode == "activity" else content_review.repair_prompt(state["prompt"], ws, state["issues"]))
+
+        def repair(chosen):
+            schema = activity.response_schema() if mode == "activity" else response_schema()
+            raw = _generate(client, chosen, instruction, [], schema)
+            try:
+                return decode(_parse_json(raw))
+            except (AnalyzeError, ValueError, TypeError, AttributeError, ValidationError) as exc:
+                raise _BrokenOutput("수정한 초안을 읽지 못했습니다.") from exc
+
+        try:
+            (draft, ws), used = _with_retry(order, repair, stage="검토 후 수정")
+        except AnalyzeError as exc:
+            raise ReviewInterrupted(str(exc), state) from exc
+        state.update(draft=draft, used=used, attempt=state["attempt"] + 1, phase="review", issues=[])
+        state.pop("preferred", None)
+
+
+@with_generation_budget
+def resume_generation(*, api_key: str, checkpoint: dict, grade: int, model: str | None = None) -> AnalyzeResult:
+    """사용자가 다시 누른 시점부터 새 대기 예산으로 검토·미처리 수정만 이어간다."""
+    if not api_key.strip():
+        raise AnalyzeError("왼쪽에 API 키를 입력한 뒤 검토를 다시 시도해 주세요.")
+    state = copy.deepcopy(checkpoint)
+    if model:
+        state["preferred"] = model
+    client = _generation_client(api_key)
+    try:
+        raw, used = _review_saved_draft(client, state)
+    finally:
+        client.close()
+    ws = Worksheet.model_validate_json(raw)
+    return AnalyzeResult(worksheet=_postprocess(_with_kind(ws, state["kind"]), grade), theme=None, model_used=used)
 
 
 def generate_for_standards(

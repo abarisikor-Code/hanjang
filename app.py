@@ -1507,12 +1507,19 @@ def settings_form(prefix: str, button_label: str, n_picked: int = 0, single: boo
 
 
 @llm.with_generation_budget
-def _run(req: dict) -> None:
+def _run(req: dict, checkpoint: dict | None = None) -> None:
     """학습지를 만들고 완성 화면으로 넘어간다. req는 다시 만들기에 그대로 쓰도록 저장한다."""
     kind = req["kind"]
+    if checkpoint and not api_key.strip():
+        st.error("왼쪽에 API 키를 입력한 뒤 검토를 다시 시도해 주세요. 초안은 계속 보관하고 있어요.")
+        return
+    if checkpoint is None:
+        ss.pop("pending_generation", None)
     try:
-        with ai_status("학습지를 만드는 중" if kind == "single" else "융합 과제를 만드는 중"):
-            if kind == "single":
+        with ai_status("보관한 초안의 검토를 이어가는 중" if checkpoint else ("학습지를 만드는 중" if kind == "single" else "융합 과제를 만드는 중")):
+            if checkpoint:
+                result = llm.resume_generation(api_key=api_key, checkpoint=checkpoint, grade=req["grade"], model=model)
+            elif kind == "single":
                 result = llm.generate_for_standards(
                     api_key=api_key, grade=req["grade"], subject=req["subject"], standards=curriculum.find(req["codes"]),
                     unit_name=req["unit"], difficulty=req["difficulty"], n_questions=req["n_questions"],
@@ -1526,9 +1533,19 @@ def _run(req: dict) -> None:
                     task_type=req["task_type"], theme=req["theme_text"], difficulty=req["difficulty"],
                     n_questions=req["n_questions"], extra=req["extra"], model=model, kind=req.get("wkind", "standard"),
                 )
+    except llm.ReviewInterrupted as e:
+        ss.pending_generation = {"request": copy.deepcopy(req), "checkpoint": e.checkpoint, "error": str(e)}
+        ss.page = "review_pending"
+        st.rerun()
     except llm.AnalyzeError as e:
+        if checkpoint:
+            ss.pop("pending_generation", None)
+            ss.generation_error = str(e)
+            ss.page = "s3" if kind == "single" else "f3"
+            st.rerun()
         st.error(str(e))
         return
+    ss.pop("pending_generation", None)
     ws = result.worksheet
     fixes = list(llm.LAST_FIXES.get())  # 계산 문제: 프로그램이 다시 계산해 고친 정답
     if req.get("review", True):
@@ -1553,6 +1570,26 @@ def _run(req: dict) -> None:
     ss.p_msg = ("success", f"'{ws.title}' 학습지를 만들었어요!")
     ss.page = "result"
     st.rerun()
+
+
+def page_review_pending() -> None:
+    pending = ss.get("pending_generation")
+    if not pending:
+        st.info("현재 보관한 검토 대기 초안이 없어요.")
+        st.button("처음 화면으로", on_click=go, args=("home",))
+        return
+    st.title("🕒 초안은 보관했어요")
+    st.write("내용 검토 또는 수정 요청이 멈췄어요. 만든 내용을 처음부터 다시 생성하지 않고 이어서 검토할 수 있어요.")
+    st.error(pending["error"])
+    req = pending["request"]
+    st.caption(f"초등 {req['grade']}학년 · 요청 문항 {req['n_questions']}개 · 아직 검토를 마치지 않은 초안")
+    st.info("잠시 후 아래 버튼을 눌러 주세요. 새 대기 시간으로 검토를 이어가며, 검토를 통과해야 완성본을 보여줘요. 수정 중 멈췄다면 남은 수정부터 이어가요.")
+    if st.button("보관한 초안 검토만 다시 시도", type="primary", key="resume_review"):
+        _run(req, checkpoint=pending["checkpoint"])
+    st.caption("초안은 현재 접속한 브라우저 세션에만 보관해요. 새로고침하거나 연결이 종료되면 사라질 수 있어요.")
+    if st.button("설정 화면으로 돌아가기", key="pending_settings"):
+        go("s3" if req["kind"] == "single" else "f3")
+        st.rerun()
 
 
 def nav(prev: str | None, next_page: str | None = None, next_label: str = "다음 →", disabled: bool = False,
@@ -2352,6 +2389,11 @@ def page_result() -> None:
 # 화면 고르기
 # =====================================================================
 page = ss.page
+if "generation_error" in ss:
+    st.error(ss.pop("generation_error"))
+if page != "review_pending" and ss.get("pending_generation"):
+    st.info("검토를 기다리는 초안을 보관하고 있어요. 새 학습지를 만들면 보관한 초안은 교체돼요.")
+    st.button("보관한 초안 검토 이어가기", key="pending_return", on_click=go, args=("review_pending",))
 shown_page = (page, ss.get("result_view", "edit"), ss.get("art_step", 1)) if page == "result" else page
 if ss.get("_shown_page") != shown_page:
     # 화면이 바뀌면 맨 위부터 보이게 한다 (앞 화면에서 내려간 위치가 남지 않도록)
@@ -2371,5 +2413,7 @@ elif page in ("f1", "f2", "f3"):
     page_fusion(int(page[1]))
 elif page == "tools":
     page_tools()
+elif page == "review_pending":
+    page_review_pending()
 else:
     page_result()

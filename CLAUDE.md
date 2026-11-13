@@ -23,7 +23,7 @@
   `data:image/(png|jpeg|webp|gif);base64,…`만 통과시킨다(외부 주소·SVG 차단). AI 응답 스키마에는 image·size가 없다.
   대신 AI는 image 블록에 file·page·box([ymin,xmin,ymax,xmax], 0~1000)를 주고, `llm.fill_images`가
   `images.PageSource`로 원본(이미지, 또는 pypdfium2로 렌더링한 PDF 쪽)에서 잘라 넣은 뒤 그 필드를 지운다.
-- Gemini 호출은 `llm._generate_with_retry`: 503·연결 오류는 같은 모델로 재시도 후 다음 모델, 429·404는 바로 다음 모델,
+- Gemini 호출은 `llm._generate_with_retry`: 503·연결 오류는 2초·4초 간격을 두고 다음 모델, 429·404는 바로 다음 모델,
   키 오류는 즉시 안내. 사용한 모델은 `AnalyzeResult.model_used`.
 - `data/curriculum_elementary.json` — 2022 개정 초등 성취기준(국어·수학 1~6, 영어·사회·과학 3~6, 399개).
   **손으로 고치지 말 것.** `python tools/build_curriculum.py`가 NCIC 원문에서 다시 만들고, 원문 코드 수와 다르면 저장하지 않는다.
@@ -97,6 +97,14 @@
   app._run의 바깥 예산은 선택한 추가 정답 검토까지 이어진다. 중첩 호출에서 시간을 다시 시작하지 않는다.
   예산 안의 `_generate`는 공개 `models.generate_content`를 사용한다. thinking_level=high와 JSON 응답 조건은 유지한다.
   요청별 http_options에 timeout=min(60초, 남은 예산), retry_options.attempts=1을 적용한다. SDK Interactions 경로의 추가 재시도를 피하고 앱이 모델 대체를 맡는다.
+  통신·검토 응답 오류나 대기 예산 부족으로 검토/수정이 멈추면 `ReviewInterrupted`에 깊은 사본의 checkpoint를 담는다. 최초 생성 자체의 실패와 구분한다.
+  `_review_saved_draft`는 activity 설계와 일반 Worksheet를 공통으로 검토·수정한다. 기존의 각 프롬프트·검사 규칙·수정 최대2회는 그대로다.
+  checkpoint에는 초안/마지막 수정본·수업 조건·원래 생성 지시·모델·미처리 지적·현재 단계·수정 횟수만 담고 API 키/클라이언트는 넣지 않는다.
+  app은 `pending_generation`을 세션에 보관하고 `review_pending` 화면에서 재개 버튼을 보여 준다. 미검토 초안은 완성 화면·다운로드로 보내지 않는다.
+  새 클릭에서 `resume_generation`이 새 150초 예산으로 검토 또는 미처리 수정을 재개한다. 초기 초안을 다시 생성하지 않으며 수정 횟수도 초기화하지 않는다.
+  검토 지적이 남고 수정2회를 소진하면 보관 재개 대상으로 돌리지 않고 새 생성 안내로 끝낸다. API 키를 비워도 보관한 초안은 유지한다.
+  설정으로 돌아가도 보관 초안에 다시 갈 수 있다. 새 생성은 이전 대기 초안을 교체한다. 서버 디스크 저장·새로고침 뒤 복구·외부 로그 수집은 하지 않는다.
+  모델 전환 대기도 전체 예산에 포함한다. 남은 시간이 1초 미만이면 새 통신을 보내지 않는다. 요청 도중 예산 만료도 앞 모델의 오류 기록과 함께 안내한다.
   예산은 요청 전후에 확인한다. 통신의 연결·읽기 단계나 후처리 시간까지 정확히 150초 벽시계를 보장하는 강제 프로세스 종료 장치는 아니다.
   제한을 넘기거나 필수 검토에 실패하면 검토하지 못한 초안을 반환하지 않는다. 대기를 끊고 남은 요청을 백그라운드에서 계속 돌리는 스레드는 만들지 않는다.
   시간 초과·서버 혼잡/연결·한도·모델 없음·JSON 형식 오류를 구분하고 진행 표시에는 초안/검토/수정 단계와 모델을 바꾼 이유를 쓴다.
