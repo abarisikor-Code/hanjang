@@ -21,7 +21,7 @@ class ReviewResumeTests(unittest.TestCase):
 
     def interrupted(self, *, activity=False):
         draft = json.dumps(sample_plan()) if activity else self.worksheet().model_dump_json()
-        with patch.object(llm, '_generate', side_effect=[draft, Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
+        with patch.object(llm, '_generate', side_effect=[draft, Busy(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm._generate_for_request(None, llm.MODELS[0], '수업 조건', request='박물관', context='3학년',
                     n_questions=2 if activity else 1, kind='inquiry' if activity else 'standard')
@@ -47,8 +47,9 @@ class ReviewResumeTests(unittest.TestCase):
     def test_resume_has_a_fresh_budget_and_does_not_hide_a_second_failure(self):
         checkpoint = self.interrupted()
         clock = [900.0]
+        budgets = []
         def inspect(*args):
-            self.assertEqual(llm._remaining_time(), llm.GENERATION_TIME_BUDGET)
+            budgets.append(llm._remaining_time())
             raise Busy()
         client = SimpleNamespace(close=lambda: None)
         with patch.object(llm.time, 'perf_counter', side_effect=lambda: clock[0]), patch.object(llm.time, 'sleep'), \
@@ -56,12 +57,13 @@ class ReviewResumeTests(unittest.TestCase):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm.resume_generation(api_key='offline-key', checkpoint=checkpoint, grade=3)
         self.assertEqual(raised.exception.checkpoint['draft'], checkpoint['draft'])
+        self.assertEqual(budgets, [llm.REVIEW_TIME_BUDGET] * 4)
         self.assertIsNone(llm._remaining_time())
 
     def test_failed_repair_resumes_pending_repair_then_reviews_it(self):
         checkpoint = self.interrupted()
         issue = dict(category='answer', question=1, evidence='정답 검산 필요', fix='정답을 다시 계산한다.')
-        with patch.object(llm, '_generate', side_effect=[json.dumps({'issues':[issue]}), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
+        with patch.object(llm, '_generate', side_effect=[json.dumps({'issues':[issue]}), Busy(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm._review_saved_draft(None, checkpoint)
         pending = raised.exception.checkpoint
@@ -77,7 +79,7 @@ class ReviewResumeTests(unittest.TestCase):
         fixed = self.worksheet()
         fixed.title = '마지막 수정본'
         checkpoint.update(attempt=1, phase='repair', issues=[dict(category='material', question=0, evidence='자료', fix='수정')])
-        with patch.object(llm, '_generate', side_effect=[fixed.model_dump_json(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
+        with patch.object(llm, '_generate', side_effect=[fixed.model_dump_json(), Busy(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm._review_saved_draft(None, checkpoint)
         pending = raised.exception.checkpoint

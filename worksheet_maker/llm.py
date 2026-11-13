@@ -6,6 +6,7 @@ import base64
 import copy
 import json
 import re
+import random
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,7 +22,7 @@ from . import kinds as kinds_mod
 from .schema import BLOCK_TYPES, Worksheet, component_guide, response_schema
 from .theme import Theme
 
-# 첫 번째가 기본. 서버가 붐비거나 제한 시간을 넘기면 다음 모델로 바로 넘어간다.
+# 첫 번째가 기본. 빠른 503은 조건부 1회 회복하고, 그 밖에는 다음 모델로 넘어간다.
 # 2026-10 실측(3학년 수학 8문항): 3.5-flash-lite+생각 많이 22초·정답 모두 맞음 / 3.6-flash 50초 /
 # 3.8·3.7-flash는 붐빌 때 거절(503)까지 2~3분이 걸렸고, 무료 키는 3.8-flash가 하루 20회로 제한된다.
 MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash"]
@@ -33,11 +34,13 @@ MODEL_LABELS = {
 THINKING = "high"  # 계산·사실 실수를 줄이려면 많이 생각하게 한다 (lite 기준 시간 차이는 수십 초 이내)
 REQUEST_TIMEOUT = 100  # 초. 통신 대기 제한이며, SDK 내부 재시도 때문에 모델 대체까지는 더 걸릴 수 있다.
 GENERATION_REQUEST_TIMEOUT = 60
-GENERATION_TIME_BUDGET = 150
+GENERATION_TIME_BUDGET = 210
+DRAFT_TIME_BUDGET = 90
+REVIEW_TIME_BUDGET = 120
 GENERATION_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"]
 _budget_deadline: ContextVar = ContextVar("generation_deadline", default=None)
 _budget_started: ContextVar = ContextVar("generation_started", default=None)
-RETRY_WAITS: tuple[int, ...] = ()  # 같은 모델 재시도 없음: 붐빌 때는 거절까지 오래 걸려서 다른 모델이 빠르다
+RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 빠른 503만 _with_retry에서 조건부 1회 회복한다.
 
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
 progress: ContextVar = ContextVar("progress", default=None)
@@ -97,6 +100,20 @@ def with_generation_budget(fn):
         with generation_budget():
             return fn(*args, **kwargs)
     return run
+
+
+@contextmanager
+def generation_phase_budget(seconds: float, *, from_start: bool = False):
+    """단계별 시간을 나누되 바깥 전체 제한을 연장하지 않는다."""
+    parent = _budget_deadline.get()
+    started = _budget_started.get() if from_start else None
+    deadline = (started if started is not None else time.perf_counter()) + seconds
+    token = _budget_deadline.set(min(parent, deadline) if parent is not None else deadline)
+    diagnostics.emit('phase_budget', budget_seconds=seconds)
+    try:
+        yield
+    finally:
+        _budget_deadline.reset(token)
 
 
 def _remaining_time() -> float | None:
@@ -384,7 +401,7 @@ def _generate_with_retry(client, model: str, prompt: str, files: list[Attachment
     return _with_retry(order, lambda m: _generate(client, m, prompt, files, schema))
 
 
-def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
+def _with_retry(order: list[str], call, *, stage: str = "AI 응답", recover_busy: bool = False):
     """실패 이유를 구분해 다음 모델을 시도한다. 새 생성은 단계 사이에도 대기 예산을 공유한다.
     call(model)의 결과와 실제로 쓴 모델을 돌려준다."""
     last: Exception | None = None
@@ -418,13 +435,15 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
         for wait in (0, *RETRY_WAITS):
             check_budget()
             if n and not wait and previous_kind == "busy":
-                delay = min(2 ** n, 8)
+                same_model = m == order[n - 1]
+                delay = random.uniform(2, 3) if same_model else min(2 ** n, 8)
                 remaining = _remaining_time()
                 if remaining is not None and remaining <= delay + 1:
                     record('budget_stop', outcome='timeout')
                     raise failed("다음 모델에 요청할 대기 시간이 부족해 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다.")
                 record('wait', wait_seconds=delay)
-                _notify(f"{stage} · 서버·연결 오류로 {delay}초 기다린 뒤 다음 모델로 전환합니다…")
+                action = "같은 모델에 한 번 다시 요청합니다" if same_model else "다음 모델로 전환합니다"
+                _notify(f"{stage} · 서버·연결 오류로 {delay:.1f}초 기다린 뒤 {action}…")
                 time.sleep(delay)
                 check_budget()
             if wait:
@@ -458,8 +477,15 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답"):
                 failures.append(f"{m}: {names.get(kind, names['other'])}"
                                 + (f" ({status})" if status else "") + f", {seconds:.1f}초")
                 previous_kind = kind
+                # 빠르게 거절된 기본 모델은 한 번 회복 기회를 준다. 오래 걸린 실패나
+                # 시간 초과·키·한도 오류는 반복하지 않는다. 최대 네 요청, SDK 재시도는 계속 끈다.
+                deadline = _budget_deadline.get()
+                remaining = deadline - time.perf_counter() if deadline is not None else 0
+                if (recover_busy and n == 0 and m == MODELS[0] and status == 503
+                        and seconds <= 15 and remaining >= 30):
+                    order.insert(1, m)
                 if kind in ("busy", "timeout", "output"):
-                    continue  # 같은 모델로 다시
+                    continue  # 준비한 다음 요청으로: 조건부 회복 또는 다음 모델
                 if kind in ("quota", "model"):
                     break  # 한도·모델 문제는 모델별이라 다음 모델로
                 raise failed(_MESSAGES.get(kind) or "Gemini 호출을 마치지 못했어요. 잠시 후 다시 시도해 주세요.") from e
@@ -641,7 +667,8 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
             return plan, ws
 
         try:
-            (plan, ws), used = _with_retry(order, design, stage="1단계 · 초안 설계")
+            with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True):
+                (plan, ws), used = _with_retry(order, design, stage="1단계 · 초안 설계", recover_busy=True)
             if ws is not None:
                 return _review_saved_draft(client, dict(mode="activity", draft=plan, used=used, prompt=plan_prompt,
                     request=request, context=context, n_questions=n_questions, kind=kind,
@@ -671,13 +698,19 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
         except (AnalyzeError, ValueError, TypeError, AttributeError) as exc:
             raise _BrokenOutput("새 학습지 응답을 읽지 못했습니다.") from exc
 
-    ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기")
+    with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True):
+        ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기", recover_busy=True)
     return _review_saved_draft(client, dict(mode="worksheet", draft=ws.model_dump(), used=used, prompt=prompt,
         request=request, context=context, n_questions=n_questions, kind=kind,
         task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]))
 
 
 def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
+    with generation_phase_budget(REVIEW_TIME_BUDGET):
+        return _review_saved_draft_in_budget(client, checkpoint)
+
+
+def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
     """초안 또는 마지막 수정본의 검토부터 이어간다. 수정 횟수와 미처리 지적도 유지한다."""
     from . import activity, content_review
 
@@ -714,7 +747,7 @@ def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
                     raise _BrokenOutput("내용 검토 결과를 읽지 못했습니다.") from exc
 
             try:
-                issues, _ = _with_retry(order, inspect, stage="2단계 · 내용 검토")
+                issues, _ = _with_retry(order, inspect, stage="2단계 · 내용 검토", recover_busy=True)
             except AnalyzeError as exc:
                 raise ReviewInterrupted(str(exc), state) from exc
             if mode == "worksheet":
@@ -738,7 +771,7 @@ def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
                 raise _BrokenOutput("수정한 초안을 읽지 못했습니다.") from exc
 
         try:
-            (draft, ws), used = _with_retry(order, repair, stage="검토 후 수정")
+            (draft, ws), used = _with_retry(order, repair, stage="검토 후 수정", recover_busy=True)
         except AnalyzeError as exc:
             raise ReviewInterrupted(str(exc), state) from exc
         state.update(draft=draft, used=used, attempt=state["attempt"] + 1, phase="review", issues=[])
