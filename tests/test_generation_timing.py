@@ -63,7 +63,7 @@ class GenerationTimingTests(unittest.TestCase):
             Block(type='short_answer', body='2 + 3', answer='5')])
         def generate(*args):
             if 'issues' in args[4]['properties']:
-                clock[0] = 50 + llm.REVIEW_TIME_BUDGET + 1
+                clock[0] = llm.GENERATION_TIME_BUDGET + 1
                 return '{"issues": []}'
             clock[0] = 50
             return ws.model_dump_json()

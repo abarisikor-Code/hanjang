@@ -677,9 +677,9 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
             with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True):
                 (plan, ws), used = _with_retry(order, design, stage="1단계 · 초안 설계", recover_busy=True)
             if ws is not None:
-                return _review_saved_draft(client, dict(mode="activity", draft=plan, used=used, prompt=plan_prompt,
+                return _review_saved_draft(client, dict(mode="activity", draft=plan, used=used, requested_model=model, prompt=plan_prompt,
                     request=request, context=context, n_questions=n_questions, kind=kind,
-                    task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]))
+                    task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]), use_remaining_budget=True)
         except ReviewInterrupted:
             raise
         except AnalyzeError as exc:
@@ -707,13 +707,16 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
 
     with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True):
         ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기", recover_busy=True)
-    return _review_saved_draft(client, dict(mode="worksheet", draft=ws.model_dump(), used=used, prompt=prompt,
+    return _review_saved_draft(client, dict(mode="worksheet", draft=ws.model_dump(), used=used, requested_model=model, prompt=prompt,
         request=request, context=context, n_questions=n_questions, kind=kind,
-        task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]))
+        task_type=task_type, subjects=subjects, attempt=0, phase="review", issues=[]), use_remaining_budget=True)
 
 
-def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
-    with generation_phase_budget(REVIEW_TIME_BUDGET):
+def _review_saved_draft(client, checkpoint: dict, *, use_remaining_budget: bool = False) -> tuple[str, str]:
+    deadline = _budget_deadline.get()
+    # 새 생성은 초안에서 아낀 시간을 버리지 않는다. 수동 재개는 기존120초다.
+    seconds = max(0, deadline - time.perf_counter()) if use_remaining_budget and deadline is not None else REVIEW_TIME_BUDGET
+    with generation_phase_budget(seconds):
         return _review_saved_draft_in_budget(client, checkpoint)
 
 
@@ -755,9 +758,10 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
                     raise _BrokenOutput("내용 검토 결과를 읽지 못했습니다.") from exc
 
             try:
-                issues, _ = _with_retry(order, inspect, stage="2단계 · 내용 검토", recover_busy=True)
+                issues, reviewed_with = _with_retry(order, inspect, stage="2단계 · 내용 검토", recover_busy=True)
             except AnalyzeError as exc:
                 raise ReviewInterrupted(str(exc), state) from exc
+            state['preferred'] = reviewed_with
             if mode == "worksheet":
                 issues = content_review.structure_issues(ws, kind, n) + issues
             issues, proven = verify.resolve_reading_issues(ws, issues)
@@ -776,6 +780,7 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
             state.update(issues=issues, phase="repair")
 
         _save_checkpoint(state)
+        order = _design_order(state.get('preferred', state['used']))
         _notify("검토에서 찾은 문제를 자료·문항·정답까지 함께 고치는 중…")
         instruction = partial_repair.prompt(state['prompt'], state['draft'], state['issues'], mode)
 
@@ -790,8 +795,7 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
             (draft, ws), used = _with_retry(order, repair, stage="검토 후 수정", recover_busy=True)
         except AnalyzeError as exc:
             raise ReviewInterrupted(str(exc), state) from exc
-        state.update(draft=draft, used=used, attempt=state["attempt"] + 1, phase="review", issues=[])
-        state.pop("preferred", None)
+        state.update(draft=draft, used=used, preferred=used, attempt=state["attempt"] + 1, phase="review", issues=[])
 
 
 @with_generation_budget
@@ -800,8 +804,10 @@ def resume_generation(*, api_key: str, checkpoint: dict, grade: int, model: str 
     if not api_key.strip():
         raise AnalyzeError("왼쪽에 API 키를 입력한 뒤 검토를 다시 시도해 주세요.")
     state = copy.deepcopy(checkpoint)
-    if model:
+    if model and (model != state.get('requested_model', state['used']) or not state.get('preferred')):
         state["preferred"] = model
+    if model:
+        state['requested_model'] = model
     client = _generation_client(api_key)
     try:
         raw, used = _review_saved_draft(client, state)

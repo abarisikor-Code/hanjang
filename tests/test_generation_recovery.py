@@ -98,7 +98,7 @@ class RecoveryTests(unittest.TestCase):
             return ws.model_dump_json()
         with patch.object(llm.time, 'perf_counter', side_effect=lambda: clock[0]), patch.object(llm, '_generate', side_effect=request):
             raw, _ = llm._generate_for_request(None, llm.MODELS[0], '가상 지시', request='', context='3학년', n_questions=1)
-        self.assertEqual(windows, [90, 120])
+        self.assertEqual(windows, [90, 130])
         self.assertEqual(Worksheet.model_validate_json(raw).title, ws.title)
         self.assertEqual(clock[0], 199)
 
@@ -110,7 +110,7 @@ class RecoveryTests(unittest.TestCase):
         def request(*args):
             count[0] += 1
             windows.append(llm._remaining_time())
-            clock[0] += [50, 60, 50, 11][count[0] - 1]
+            clock[0] += [50, 60, 50, 51][count[0] - 1]
             if count[0] == 2:
                 return json.dumps({'issues': [issue]})
             if count[0] == 3:
@@ -119,7 +119,7 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(llm.time, 'perf_counter', side_effect=lambda: clock[0]), patch.object(llm, '_generate', side_effect=request):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm._generate_for_request(None, llm.MODELS[0], '가상 지시', request='', context='3학년', n_questions=1)
-        self.assertEqual(windows, [90, 120, 60, 10])
+        self.assertEqual(windows, [90, 160, 100, 50])
         self.assertEqual(raised.exception.checkpoint['attempt'], 1)
 
     def test_phase_window_never_extends_an_existing_outer_deadline(self):

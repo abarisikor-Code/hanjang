@@ -1631,7 +1631,7 @@ def _run_generation(req: dict, checkpoint: dict | None = None) -> None:
         return
     if checkpoint is None:
         ss.pop("pending_generation", None)
-    st.caption('초안은 최대 90초, 검토·수정은 최대 120초 동안 시도해요. 응답을 받으면 바로 진행하며, 실패가 이어지면 전체 최대 약 3분 30초 걸릴 수 있어요.' if not checkpoint
+    st.caption('초안은 최대 90초 동안 시도하고, 빨리 끝나면 남은 시간을 검토·수정에 이어 써요. 응답을 받으면 바로 진행하며, 전체 최대 대기는 약 3분 30초예요.' if not checkpoint
                else '보관한 초안의 검토·수정만 최대 120초 동안 시도해요. 초안을 처음부터 다시 만들지 않아요.')
     try:
         with ai_status("보관한 초안의 검토를 이어가는 중" if checkpoint else ("학습지를 만드는 중" if kind == "single" else "융합 과제를 만드는 중")):
