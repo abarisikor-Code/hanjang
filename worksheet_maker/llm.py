@@ -719,7 +719,7 @@ def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
 
 def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
     """초안 또는 마지막 수정본의 검토부터 이어간다. 수정 횟수와 미처리 지적도 유지한다."""
-    from . import activity, content_review
+    from . import activity, content_review, partial_repair
 
     state = copy.deepcopy(checkpoint)
     mode, kind, n = state["mode"], state["kind"], state["n_questions"]
@@ -768,14 +768,12 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
 
         _save_checkpoint(state)
         _notify("검토에서 찾은 문제를 자료·문항·정답까지 함께 고치는 중…")
-        instruction = (activity.repair_prompt(state["prompt"], state["draft"], state["issues"])
-            if mode == "activity" else content_review.repair_prompt(state["prompt"], ws, state["issues"]))
+        instruction = partial_repair.prompt(state['prompt'], state['draft'], state['issues'], mode)
 
         def repair(chosen):
-            schema = activity.response_schema() if mode == "activity" else response_schema()
-            raw = _generate(client, chosen, instruction, [], schema)
+            raw = _generate(client, chosen, instruction, [], partial_repair.schema(mode))
             try:
-                return decode(_parse_json(raw))
+                return decode(partial_repair.apply(state['draft'], _parse_json(raw), mode))
             except (AnalyzeError, ValueError, TypeError, AttributeError, ValidationError) as exc:
                 raise _BrokenOutput("수정한 초안을 읽지 못했습니다.") from exc
 

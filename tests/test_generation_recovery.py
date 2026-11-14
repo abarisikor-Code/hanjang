@@ -5,6 +5,7 @@ import httpx
 
 from worksheet_maker import llm, diagnostics
 from worksheet_maker.schema import Worksheet, Block
+from repair_fixtures import worksheet_patch
 
 
 class Busy(Exception):
@@ -112,6 +113,8 @@ class RecoveryTests(unittest.TestCase):
             clock[0] += [50, 60, 50, 11][count[0] - 1]
             if count[0] == 2:
                 return json.dumps({'issues': [issue]})
+            if count[0] == 3:
+                return json.dumps(worksheet_patch(ws))
             return '{"issues":[]}' if count[0] == 4 else ws.model_dump_json()
         with patch.object(llm.time, 'perf_counter', side_effect=lambda: clock[0]), patch.object(llm, '_generate', side_effect=request):
             with self.assertRaises(llm.ReviewInterrupted) as raised:

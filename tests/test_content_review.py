@@ -8,6 +8,7 @@ import httpx
 from worksheet_maker import activity, llm
 from worksheet_maker.schema import Block, Worksheet
 from test_activity_design import sample_plan
+from repair_fixtures import activity_patch
 
 
 def issue():
@@ -75,6 +76,7 @@ class ContentReviewTests(unittest.TestCase):
         self.assertEqual(ws.blocks[-1].body, '520 - 260을 계산해 보세요.')
 
     def run_plan(self, outputs):
+        outputs = [activity_patch(v) if i in (2, 4) and v.get('has_interest') else v for i, v in enumerate(outputs)]
         with patch.object(llm, '_generate', side_effect=[json.dumps(v) for v in outputs]) as call:
             result = llm._generate_for_request(None, llm.MODELS[0], '원래 지시', request='가족 저녁 식사',
                 context='3학년 세 자리 수 덧셈과 뺄셈', n_questions=2, kind="inquiry")

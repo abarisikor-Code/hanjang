@@ -14,6 +14,12 @@
 
 ## 구조
 - `worksheet_maker/schema.py` — 구성요소 목록(`BLOCK_TYPES`), Pydantic 모델, Gemini JSON 스키마
+- `worksheet_maker/partial_repair.py` — 새 생성의 검토 후 수정 응답. 전체 학습지 대신 고칠 조각과 위치만 받는다.
+  Worksheet는 block_edits, 활동 설계는 question_edits·material_edits를 쓰며 각 조각은 at(수정 전 배열의0기준 위치)·delete·values다.
+  header에는 실제로 바꿀 머리말 필드만 받는다. 프롬프트에는 배열 위치와 인쇄 문항 번호를 따로 표시하며 연결 자료·질문·보기·정답·해설을 함께 고치게 한다.
+  모든 위치·중복·겹침·허용 머리말 필드를 먼저 검사하고, 깊은 사본에 뒤쪽부터 적용한다. 원본과 수정하지 않은 조각은 유지한다.
+  기존 Worksheet/활동 변환 검사와 전체 AI 재검토를 통과해야 완성하며, 수정 최대2회·초안 보관·재개·대기 예산은 그대로다.
+  적용할 수 없는 수정 응답은 기존 응답 오류 처리로 보내고 원본 초안을 보관한다. 예전 checkpoint도 같은 draft 구조라 이어 쓸 수 있다.
 - `worksheet_maker/theme.py` — 스타일 선택지(`THEME_OPTIONS`), CSS 변수·클래스 변환, `themes/*.json` 저장·불러오기
 - `worksheet_maker/llm.py` — 프롬프트와 Gemini 호출. Interactions API(`client.interactions.create`),
   이미지는 `{"type":"image"}`, PDF는 `{"type":"document"}`로 base64 첨부. 구버전 SDK는 generate_content로 대체
@@ -133,8 +139,8 @@
   `activity.context_issues`는 소수 원 가격·가격 열의 물품 양·공동 자료에서 떨어진 맨 식 계산 편중·식 선택/계산 쌍 반복을 검사한다.
   이 프로그램 검사는 활동의 의미까지 보증하지 않으므로 별도 AI 내용 검토와 실제 출력 확인을 병행한다. 관심사가 없다고 판단하면 원래 생성 경로로 간다.
   개념 익히기·배운 내용 확인·반복 연습 및 과목별 나누기, 머리말로 새 만들기는 `_generate_reviewed_worksheet`를 거친다.
-  `content_review.py`는 실제 Worksheet를 읽는 유형별 검토·전체 재작성 지시와 문항 수/필수 구성 검사를 담당한다.
-  이 경로도 선택한 모델로 생성→검토→필요하면 전체 수정·재검토(최대2회)를 하며 실패한 검토를 통과로 취급하지 않는다.
+  `content_review.py`는 실제 Worksheet를 읽는 유형별 검토와 문항 수/필수 구성 검사를 담당한다. 기존 전체 재작성 지시 함수는 호환용으로 남기며 새 생성은 partial_repair를 쓴다.
+  이 경로도 선택한 모델로 생성→검토→필요한 조각 수정→전체 재검토(수정 최대2회)를 하며 실패한 검토를 통과로 취급하지 않는다.
   `content_review.prompt`는 학생에게 인쇄되는 빈칸 모양으로 본문·보기·표를 보내고, answer·solution은 교사용 검산 정보임을 명시한다. 저장용 [[정답]]을 답 노출로 오해해 재수정하는 일을 줄인다. 원본과 정답은 보존한다.
   융합 검토에는 task_type·subjects를 전달한다. 세 통합 과제 형태에는 일반 inquiry의 관찰·그리기 블록 틀을 섞지 않고, 과목별 나누기에서만 고른 학습지 유형 규칙을 함께 쓴다.
   주제 입력 여부와 무관하게 수량·단위·범위·정답·자료·답 노출을 공통 검사한다. 반복 연습의 기능 반복은 허용하고, 개념형은 설명·예시·적용,

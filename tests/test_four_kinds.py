@@ -33,7 +33,8 @@ class FourKindsTests(unittest.TestCase):
         bad = Worksheet(title='개념', blocks=[Block(type='short_answer', body='2 + 3', answer='5')])
         fixed = bad.model_copy(deep=True)
         fixed.blocks.insert(0, Block(type='concept', items=['덧셈: 두 수를 모읍니다.']))
-        outputs = [bad.model_dump_json(), '{"issues": []}', fixed.model_dump_json(), '{"issues": []}']
+        delta = {'header': {}, 'block_edits': [{'at': 0, 'delete': 0, 'values': [fixed.blocks[0].model_dump()]}]}
+        outputs = [bad.model_dump_json(), '{"issues": []}', json.dumps(delta), '{"issues": []}']
         with patch.object(llm, '_generate', side_effect=outputs) as call:
             raw, _ = llm._generate_for_request(None, llm.MODELS[0], '개념 지시', request='',
                 context='1학년', n_questions=1)

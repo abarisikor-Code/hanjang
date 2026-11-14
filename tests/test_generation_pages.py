@@ -9,6 +9,7 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 from worksheet_maker import llm, diagnostics
 from worksheet_maker.schema import Block, Worksheet
+from repair_fixtures import worksheet_patch
 
 
 class GenerationPageTests(unittest.TestCase):
@@ -122,7 +123,7 @@ class GenerationPageTests(unittest.TestCase):
         self.assertEqual(pending['issues'], [issue])
         self.assertEqual(pending['attempt'], 0)
         with patch.object(llm, '_generation_client', return_value=SimpleNamespace(close=lambda:None)), \
-             patch.object(llm, '_generate', side_effect=[self.worksheet().model_dump_json(), '{"issues":[]}']) as repair:
+             patch.object(llm, '_generate', side_effect=[json.dumps(worksheet_patch(self.worksheet())), '{"issues":[]}']) as repair:
             app.button(key='resume_review').click().run()
         self.assertEqual(app.session_state['page'], 'result')
         self.assertEqual(repair.call_count, 2)

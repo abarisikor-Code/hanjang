@@ -7,6 +7,7 @@ from unittest.mock import patch
 from worksheet_maker import llm
 from worksheet_maker.schema import Block, Worksheet
 from test_activity_design import sample_plan
+from repair_fixtures import worksheet_patch
 
 
 class Busy(Exception):
@@ -69,9 +70,9 @@ class ReviewResumeTests(unittest.TestCase):
         pending = raised.exception.checkpoint
         self.assertEqual(pending['phase'], 'repair')
         self.assertEqual(pending['issues'], [issue])
-        _, call = self.resume(pending, [self.worksheet().model_dump_json(), '{"issues":[]}'])
+        _, call = self.resume(pending, [json.dumps(worksheet_patch(self.worksheet())), '{"issues":[]}'])
         self.assertEqual(call.call_count, 2)
-        self.assertIn('blocks', call.call_args_list[0].args[4]['properties'])
+        self.assertIn('block_edits', call.call_args_list[0].args[4]['properties'])
         self.assertIn('issues', call.call_args_list[1].args[4]['properties'])
 
     def test_latest_repaired_draft_and_repair_limit_survive_interruption(self):
@@ -79,7 +80,7 @@ class ReviewResumeTests(unittest.TestCase):
         fixed = self.worksheet()
         fixed.title = '마지막 수정본'
         checkpoint.update(attempt=1, phase='repair', issues=[dict(category='material', question=0, evidence='자료', fix='수정')])
-        with patch.object(llm, '_generate', side_effect=[fixed.model_dump_json(), Busy(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
+        with patch.object(llm, '_generate', side_effect=[json.dumps(worksheet_patch(fixed)), Busy(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm._review_saved_draft(None, checkpoint)
         pending = raised.exception.checkpoint
