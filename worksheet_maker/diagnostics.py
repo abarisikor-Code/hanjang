@@ -14,11 +14,11 @@ from uuid import uuid4
 _current: ContextVar = ContextVar('generation_diagnostics', default=None)
 _stages = {'AI 응답': 'ai', '1단계 · 초안 설계': 'draft',
            '1단계 · 초안 만들기': 'draft', '2단계 · 내용 검토': 'review', '검토 후 수정': 'repair'}
-_events = {'start', 'phase_budget', 'request_start', 'request_end', 'request_settings', 'wait', 'budget_stop', 'finish'}
+_events = {'start', 'phase_budget', 'request_start', 'request_end', 'request_settings', 'wait', 'budget_stop', 'verification', 'finish'}
 _outcomes = {'success', 'busy', 'timeout', 'quota', 'model', 'output', 'key', 'other',
              'pending_review', 'failed', 'interrupted', 'running', 'success_with_review_warning'}
 _numbers = {'remaining_seconds', 'duration_seconds', 'timeout_seconds', 'prompt_chars',
-            'attachment_count', 'http_status', 'wait_seconds', 'budget_seconds'}
+            'attachment_count', 'http_status', 'wait_seconds', 'budget_seconds', 'verified_answers'}
 
 
 def _utc():

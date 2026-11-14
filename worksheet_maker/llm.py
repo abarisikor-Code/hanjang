@@ -19,7 +19,7 @@ from . import theme as theme_mod
 from . import curriculum
 from . import diagnostics
 from . import kinds as kinds_mod
-from .schema import BLOCK_TYPES, Worksheet, component_guide, response_schema
+from .schema import BLOCK_TYPES, QUESTION_TYPES, Worksheet, component_guide, response_schema
 from .theme import Theme
 
 # 첫 번째가 기본. 빠른 503은 조건부 1회 회복하고, 그 밖에는 다음 모델로 넘어간다.
@@ -719,7 +719,7 @@ def _review_saved_draft(client, checkpoint: dict) -> tuple[str, str]:
 
 def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
     """초안 또는 마지막 수정본의 검토부터 이어간다. 수정 횟수와 미처리 지적도 유지한다."""
-    from . import activity, content_review, partial_repair
+    from . import activity, content_review, partial_repair, verify
 
     state = copy.deepcopy(checkpoint)
     mode, kind, n = state["mode"], state["kind"], state["n_questions"]
@@ -760,6 +760,15 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
                 raise ReviewInterrupted(str(exc), state) from exc
             if mode == "worksheet":
                 issues = content_review.structure_issues(ws, kind, n) + issues
+            issues, proven = verify.resolve_reading_issues(ws, issues)
+            if proven:
+                diagnostics.emit('verification', verified_answers=len(proven))
+                if mode == 'worksheet':
+                    state['draft'] = ws.model_dump()
+                else:
+                    questions = [b for b in ws.blocks if b.type in QUESTION_TYPES]
+                    for number in proven:
+                        state['draft']['questions'][number - 1]['solution'] = questions[number - 1].solution
             if not issues:
                 return ws.model_dump_json(), state["used"]
             if state["attempt"] == 2:

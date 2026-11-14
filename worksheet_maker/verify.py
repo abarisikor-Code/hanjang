@@ -433,6 +433,36 @@ def int_to_korean(n: int) -> str:
     return " ".join(parts)
 
 
+def resolve_reading_issues(ws: Worksheet, issues: list[dict]) -> tuple[list[dict], set[int]]:
+    """한 수를 바르게 읽는 선택형만 직접 증명한다. 범위·자료 등 다른 지적은 유지한다."""
+    from .render import CIRCLED, _option_text
+
+    numbered, number = {}, 1
+    for block in ws.blocks:
+        if block.type in QUESTION_TYPES:
+            numbered[number] = block
+            number += len(block.items) if block.type == 'drill' else 1
+    remaining, proven = [], set()
+    for issue in issues:
+        block = numbered.get(issue.get('question'))
+        match = re.fullmatch(r'(?:다음\s*수\s*)?(\d[\d,]*)\s*(?:을|를)\s*'
+            r'(?:바르게|알맞게|옳게)\s*읽은\s*것을\s*골라\s*보세요[.!?]?',
+            block.body.strip()) if block is not None and block.type == 'multiple_choice' else None
+        if issue.get('category') == 'answer' and match:
+            want = int(match[1].replace(',', ''))
+            vals = [korean_to_int(_option_text(item)) for item in block.items]
+            hits = [i for i, value in enumerate(vals) if value == want]
+            if (2 <= len(vals) <= 5 and all(value is not None for value in vals)
+                    and len(set(vals)) == len(vals) and len(hits) == 1
+                    and block.answer.strip() in (CIRCLED[hits[0]], f'{CIRCLED[hits[0]]} {_option_text(block.items[hits[0]])}')):
+                # 정답은 이미 맞으므로 보존한다. 해설도 계산으로 확실한 문장으로 맞춘다.
+                block.solution = f'{want:,}은 {int_to_korean(want)}이라고 읽습니다.'
+                proven.add(issue['question'])
+                continue
+        remaining.append(issue)
+    return remaining, proven
+
+
 def check_number_words(ws: Worksheet) -> list[str]:
     """수 읽기·쓰기 문항의 정답을 바로잡는다: '4050200을 읽어 보세요'(답: 한글), ''삼천이백십만'을 숫자로'(답: 숫자), 읽기 선택형."""
     from .render import CIRCLED, _option_text
@@ -450,17 +480,22 @@ def check_number_words(ws: Worksheet) -> list[str]:
                 right = int_to_korean(numbers[0])
                 notes.append(f"{num}번 정답 {b.answer} → {right}")
                 b.answer = right
+                b.solution = f'{numbers[0]:,}은 {right}이라고 읽습니다.'
         quoted = re.findall(r"['‘’\"“”]([일이삼사오육칠팔구십백천만억조영\s]+)['‘’\"“”]", body)
         if b.type == "short_answer" and "숫자로" in body and len(quoted) == 1 and re.fullmatch(r"\s*[\d,]+\s*", b.answer):
             want = korean_to_int(quoted[0])
             if want is not None and int(b.answer.replace(",", "")) != want:
                 notes.append(f"{num}번 정답 {b.answer.strip()} → {want}")
                 b.answer = str(want)
+                b.solution = f"'{quoted[0]}'을 숫자로 쓰면 {want:,}입니다."
         if b.type == "multiple_choice" and re.search(r"읽은|읽기|읽는", body) and len(numbers) == 1:
+            if re.search(r'잘못|틀리게|옳지|바르지|아닌', body):
+                continue
             vals = [korean_to_int(_option_text(o)) for o in b.items]
             hits = [i for i, v in enumerate(vals) if v == numbers[0]]
             cur = CIRCLED.index(b.answer.strip()[0]) if b.answer.strip()[:1] in CIRCLED else -1
             if len(hits) == 1 and hits[0] != cur:
                 notes.append(f"{num}번 정답 → {CIRCLED[hits[0]]}")
                 b.answer = f"{CIRCLED[hits[0]]} {_option_text(b.items[hits[0]])}"
+                b.solution = f'{numbers[0]:,}은 {int_to_korean(numbers[0])}이라고 읽습니다.'
     return notes
