@@ -44,6 +44,13 @@ RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 빠른 503만 _
 
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
 progress: ContextVar = ContextVar("progress", default=None)
+checkpoint_progress: ContextVar = ContextVar("generation_checkpoint", default=None)
+
+
+def _save_checkpoint(state: dict) -> None:
+    callback = checkpoint_progress.get()
+    if callback:
+        callback(copy.deepcopy(state))
 
 
 def _notify(msg: str) -> None:
@@ -731,6 +738,7 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
 
     _, ws = decode(state["draft"])
     while True:
+        _save_checkpoint(state)
         order = _design_order(state.get("preferred", state["used"]))
         if state["phase"] == "review":
             _notify("보관한 초안의 자료·문항·정답을 검토하는 중…")
@@ -758,6 +766,7 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
                 raise AnalyzeError("유형에 맞는 구성이나 내용을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
             state.update(issues=issues, phase="repair")
 
+        _save_checkpoint(state)
         _notify("검토에서 찾은 문제를 자료·문항·정답까지 함께 고치는 중…")
         instruction = (activity.repair_prompt(state["prompt"], state["draft"], state["issues"])
             if mode == "activity" else content_review.repair_prompt(state["prompt"], ws, state["issues"]))

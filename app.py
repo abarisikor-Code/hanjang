@@ -338,7 +338,8 @@ def _focus(bid: str) -> None:
 # 키: 이 컴퓨터(.env, LOCAL) 또는 이 브라우저에 기억해 둔 것. 사이드바의 키 입력칸보다 먼저.
 if "w_api_key" not in ss:
     ss.w_api_key = os.getenv("GEMINI_API_KEY", "").strip() if LOCAL else ""  # 인터넷판은 서버 키를 절대 쓰지 않는다
-if not LOCAL:
+generation_busy = ss.page == 'generation_running'
+if not LOCAL and not generation_busy:
     _browser_key_sync()
 
 # =====================================================================
@@ -347,34 +348,34 @@ if not LOCAL:
 with st.sidebar:
     st.markdown("## 📝 한장" + (f" :gray-badge[v{APP_VERSION}]" if APP_VERSION else "") + " :small[:gray[(made by 백)]]")
     st.caption("누구나 쉽게 만드는 A4 학습지")
-    st.button("🏠 처음 화면으로", width="stretch", on_click=go, args=("home",))
+    st.button("🏠 처음 화면으로", width="stretch", on_click=go, args=("home",), disabled=generation_busy)
     if ss.ws["blocks"] and ss.page != "result":
-        st.button("✏️ 만들던 학습지로", width="stretch", on_click=go, args=("result",))
+        st.button("✏️ 만들던 학습지로", width="stretch", on_click=go, args=("result",), disabled=generation_busy)
     st.divider()
     env_key = os.getenv("GEMINI_API_KEY", "").strip() if LOCAL else ""  # 인터넷판은 서버 키를 절대 쓰지 않는다
     # 키 칸은 접지 않는다: 키를 넣으면 바로 아래에서 저장할 수 있게
     api_key = st.text_input(
-        "🔑 Gemini API 키", type="password", key="w_api_key", on_change=_key_typed,
+        "🔑 Gemini API 키", type="password", key="w_api_key", on_change=_key_typed, disabled=generation_busy,
         help=f"{KEY_URL} 에서 무료로 받을 수 있어요. 받는 방법은 아래 '키 받는 방법'을 보세요.",
     ).strip()
     st.link_button("🔑 API 키 발급받기 ↗", KEY_URL, width="stretch",
                    help="새 탭에서 Google AI Studio의 API 키 발급 페이지를 열어요.")
     if LOCAL:
         if api_key and api_key != env_key:
-            st.button("💾 이 컴퓨터에 키 기억하기", on_click=_remember_key, args=(api_key,), width="stretch", type="primary",
+            st.button("💾 이 컴퓨터에 키 기억하기", on_click=_remember_key, args=(api_key,), width="stretch", type="primary", disabled=generation_busy,
                       help="다음에 열 때 키를 다시 넣지 않아도 돼요. 이 컴퓨터를 다른 사람과 같이 쓰면 누르지 마세요.")
         elif env_key:
             st.caption("🔑 이 컴퓨터에 기억해 둔 키를 쓰고 있어요.")
-            st.button("기억한 키 지우기", on_click=_remember_key, args=("",), width="stretch")
+            st.button("기억한 키 지우기", on_click=_remember_key, args=("",), width="stretch", disabled=generation_busy)
     else:
         probe, saved = ss.get("key_probe", ""), ss.get("key_saved", "")
         if ss.get("key_remembered"):
             st.caption("🔑 이 브라우저에 저장해 두었어요. 다음에 열 때도 자동으로 채워져요." +
                        (" ✅ 저장하고 다시 읽어 확인했어요." if saved == "saved" else ""))
-            st.button("저장한 키 지우기", on_click=_forget_browser_key, width="stretch", key="forget_browser_key",
+            st.button("저장한 키 지우기", on_click=_forget_browser_key, width="stretch", key="forget_browser_key", disabled=generation_busy,
                       help="여러 사람이 쓰는 컴퓨터라면 다 쓴 뒤에 지워 주세요.")
         elif api_key:
-            st.button("💾 이 브라우저에 키 저장", on_click=_save_browser_key, width="stretch", type="primary",
+            st.button("💾 이 브라우저에 키 저장", on_click=_save_browser_key, width="stretch", type="primary", disabled=generation_busy,
                       key="save_browser_key",
                       help="다음에 접속할 때 키가 자동으로 채워져요. 키는 이 컴퓨터의 이 브라우저에만 남고 서버에는 저장되지 않아요.")
             st.caption("저장하지 않으면 새로 고침하거나 창을 닫을 때 지워져요. 학교 공용 컴퓨터에서는 저장하지 마세요.")
@@ -389,7 +390,7 @@ with st.sidebar:
             key_help()
     with st.expander("⚙️ 설정"):
         model = st.selectbox(
-            "AI 모델", llm.GENERATION_MODELS, format_func=lambda m: llm.MODEL_LABELS.get(m, m),
+            "AI 모델", llm.GENERATION_MODELS, format_func=lambda m: llm.MODEL_LABELS.get(m, m), disabled=generation_busy,
             help="기본은 3.5 Flash Lite입니다. 모든 모델에서 같은 내용 검토를 거칩니다. 고른 모델이 붐비거나 오래 걸리면 다른 모델로 바꿔 시도합니다.",
         )
     st.caption("도움말: 막히면 🏠 처음 화면으로 돌아가 다시 시작해도 만들던 학습지는 남아 있어요.")
@@ -1510,10 +1511,105 @@ def _run(req: dict, checkpoint: dict | None = None) -> None:
     if checkpoint and not api_key.strip():
         st.error("왼쪽에 API 키를 입력한 뒤 검토를 다시 시도해 주세요. 초안은 계속 보관하고 있어요.")
         return
+    # 버튼의 일회성 제출 값에 장시간 작업을 매달지 않는다.
+    ss.generation_task = {'request': copy.deepcopy(req), 'checkpoint': copy.deepcopy(checkpoint), 'status': 'queued'}
+    ss.pop('generation_failure', None)
+    ss.page = 'generation_running'
+    st.rerun()
+
+
+def _generation_failed(req: dict, message: str) -> None:
+    ss.generation_failure = {'request': copy.deepcopy(req), 'message': message}
+    ss.pop('pending_generation', None)
+    ss.page = 'generation_failed'
+
+
+def _return_generation_settings(req: dict) -> None:
+    prefix = 'p' if req['kind'] == 'single' else 'f'
+    ss.grade = req['grade']
+    ss.n_questions = req['n_questions']
+    ss.wkind = req.get('wkind', 'standard')
+    for suffix, field in {'diff': 'difficulty', 'review': 'review', 'extra': 'extra',
+                          'unit': 'unit', 'theme_text': 'theme_text', 'task': 'task_type', 'mix': 'mix'}.items():
+        if field in req:
+            ss[f'{prefix}_{suffix}'] = req[field]
+    if prefix == 'p':
+        ss.subject = req['subject']
+        ss.sel[f"p|{req['subject']}"] = list(req['codes'])
+    else:
+        ss.fusion_subjects = list(req['picks'])
+        for subject, codes in req['picks'].items():
+            ss.sel[f'f_{subject}|{subject}'] = list(codes)
+    go('s3' if prefix == 'p' else 'f3')
+    st.rerun()
+
+
+def _generation_interrupted(req: dict) -> None:
+    message = '화면이 갱신되어 진행 중인 작업이 중단됐어요. 같은 요청을 자동으로 중복 실행하지 않았습니다.'
+    if ss.get('pending_generation'):
+        ss.pending_generation['error'] = message + ' 만들어 둔 초안의 검토·수정부터 이어갈 수 있어요.'
+        ss.page = 'review_pending'
+    else:
+        _generation_failed(req, message + ' 아래 버튼으로 같은 설정에서 다시 시도해 주세요.')
+
+
+def page_generation_running() -> None:
+    job = ss.get('generation_task')
+    if not job:
+        st.info('진행할 만들기 요청이 없어요.')
+        st.button('처음 화면으로', on_click=go, args=('home',))
+        return
+    req, checkpoint = job['request'], job['checkpoint']
+    if job['status'] != 'queued':
+        # 새 실행에서 이전 실행의 흔적만 남았으면 새 API 요청을 보내지 않는다.
+        _generation_interrupted(req)
+        job['status'] = 'interrupted'
+        st.rerun()
+    st.title('📝 학습지를 만들고 있어요')
+    st.write('초안 만들기 → 내용 검토 → 필요한 수정 순서로 진행해요. 완료되면 학습지 화면으로 이동합니다.')
+    job['status'] = 'running'
     previous = ss.get('generation_diagnostics') if checkpoint else None
-    with diagnostics.capture(APP_VERSION, previous) as report:
-        ss.generation_diagnostics = report
-        _run_generation(req, checkpoint)
+
+    def remember(state):
+        ss.pending_generation = {'request': copy.deepcopy(req), 'checkpoint': state,
+                                 'error': '초안의 검토·수정을 기다리고 있어요.'}
+
+    token = llm.checkpoint_progress.set(remember)
+    report = None
+    try:
+        with diagnostics.capture(APP_VERSION, previous) as report:
+            ss.generation_diagnostics = report
+            try:
+                _run_generation(req, checkpoint)
+            except Exception:
+                # 예상하지 못한 앱 오류도 원문·키가 든 예외 문자열을 노출하지 않는다.
+                diagnostics.finish('failed')
+                _generation_failed(req, '앱에서 학습지를 처리하는 중 문제가 생겼어요. 진단 기록을 내려받아 보내 주세요.')
+                st.rerun()
+    finally:
+        llm.checkpoint_progress.reset(token)
+        if report is None or report.get('status') == 'interrupted':
+            job['status'] = 'interrupted'
+            _generation_interrupted(req)
+        else:
+            job['status'] = 'finished'
+
+
+def page_generation_failed() -> None:
+    failure = ss.get('generation_failure')
+    if not failure:
+        st.info('현재 보관한 실패 안내가 없어요.')
+        st.button('처음 화면으로', on_click=go, args=('home',))
+        return
+    st.title('학습지를 완성하지 못했어요')
+    st.error(failure['message'])
+    _diagnostic_download('diagnostic_failed_page')
+    req = failure['request']
+    st.caption(f"초등 {req['grade']}학년 · 요청 문항 {req['n_questions']}개 · 만들기 설정은 보관했어요.")
+    if st.button('같은 설정으로 다시 시도', type='primary', key='retry_generation'):
+        _run(req)
+    if st.button('설정 화면으로 돌아가기', key='failed_settings'):
+        _return_generation_settings(req)
 
 
 def _diagnostic_download(key: str) -> None:
@@ -1562,12 +1658,7 @@ def _run_generation(req: dict, checkpoint: dict | None = None) -> None:
         st.rerun()
     except llm.AnalyzeError as e:
         diagnostics.finish('failed')
-        if checkpoint:
-            ss.pop("pending_generation", None)
-            ss.generation_error = str(e)
-            ss.page = "s3" if kind == "single" else "f3"
-            st.rerun()
-        ss.generation_error = str(e)
+        _generation_failed(req, str(e))
         st.rerun()
     ss.pop("pending_generation", None)
     ws = result.worksheet
@@ -1616,8 +1707,7 @@ def page_review_pending() -> None:
         _run(req, checkpoint=pending["checkpoint"])
     st.caption("초안은 현재 접속한 브라우저 세션에만 보관해요. 새로고침하거나 연결이 종료되면 사라질 수 있어요.")
     if st.button("설정 화면으로 돌아가기", key="pending_settings"):
-        go("s3" if req["kind"] == "single" else "f3")
-        st.rerun()
+        _return_generation_settings(req)
 
 
 def nav(prev: str | None, next_page: str | None = None, next_label: str = "다음 →", disabled: bool = False,
@@ -2420,10 +2510,10 @@ page = ss.page
 if "generation_error" in ss:
     st.error(ss.pop("generation_error"))
     _diagnostic_download('diagnostic_failure')
-elif page != 'review_pending' and ss.get('generation_diagnostics'):
+elif page not in ('review_pending', 'generation_running', 'generation_failed') and ss.get('generation_diagnostics'):
     with st.expander('최근 생성 작업의 진단 기록'):
         _diagnostic_download('diagnostic_latest')
-if page != "review_pending" and ss.get("pending_generation"):
+if page not in ('review_pending', 'generation_running') and ss.get("pending_generation"):
     st.info("검토를 기다리는 초안을 보관하고 있어요. 새 학습지를 만들면 보관한 초안은 교체돼요.")
     st.button("보관한 초안 검토 이어가기", key="pending_return", on_click=go, args=("review_pending",))
 shown_page = (page, ss.get("result_view", "edit"), ss.get("art_step", 1)) if page == "result" else page
@@ -2447,5 +2537,9 @@ elif page == "tools":
     page_tools()
 elif page == "review_pending":
     page_review_pending()
+elif page == 'generation_running':
+    page_generation_running()
+elif page == 'generation_failed':
+    page_generation_failed()
 else:
     page_result()

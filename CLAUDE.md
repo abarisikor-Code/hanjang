@@ -112,6 +112,8 @@
   통신·검토 응답 오류나 대기 예산 부족으로 검토/수정이 멈추면 `ReviewInterrupted`에 깊은 사본의 checkpoint를 담는다. 최초 생성 자체의 실패와 구분한다.
   `_review_saved_draft`는 activity 설계와 일반 Worksheet를 공통으로 검토·수정한다. 기존의 각 프롬프트·검사 규칙·수정 최대2회는 그대로다.
   checkpoint에는 초안/마지막 수정본·수업 조건·원래 생성 지시·모델·미처리 지적·현재 단계·수정 횟수만 담고 API 키/클라이언트는 넣지 않는다.
+  `llm.checkpoint_progress`는 별도 ContextVar 콜백이다. 검토 시작과 수정 시작 전에 현재 checkpoint의 깊은 사본을 app 세션에 전달한다.
+  통신 오류뿐 아니라 Streamlit 화면 갱신으로 실행이 끊겨도 마지막 초안·미처리 지적·수정 횟수를 남긴다. API 키·클라이언트·외부 로그에는 넣지 않는다.
   app은 `pending_generation`을 세션에 보관하고 `review_pending` 화면에서 재개 버튼을 보여 준다. 미검토 초안은 완성 화면·다운로드로 보내지 않는다.
   새 클릭에서 `resume_generation`이 새 검토·수정 120초 예산으로 재개한다. 초기 초안을 다시 생성하지 않으며 수정 횟수도 초기화하지 않는다.
   검토 지적이 남고 수정2회를 소진하면 보관 재개 대상으로 돌리지 않고 새 생성 안내로 끝낸다. API 키를 비워도 보관한 초안은 유지한다.
@@ -222,10 +224,17 @@
   크롬) `--app` 창을 한장 전용 프로필(`%LOCALAPPDATA%/hanjang/window`)로 열어, 그 창이 모두 닫히면 서버를 끈다. 실행 .bat은 CP949로 쓴다. `.gitignore`는 `.env`·`forms/*.json`·직접 저장한 모양을 뺀다.
 - `app.py` — Streamlit 화면. 초보자용 **단계형 흐름**(`ss.page`):
   `home`(카드 3개) → 한 과목 `s1`→`s2`→`s3` / 융합 `f1`→`f2`→`f3` / 내 자료 `tools` → 완성 `result`.
+  새 만들기는 `generation_running`(진행) → `result` / `review_pending`(초안 보관) / `generation_failed`(초안 없이 실패)로 간다.
   - 화면을 옮겨도 남아야 하는 값은 위젯 키가 아닌 별도 키에 둔다: `ss.grade`, `ss.subject`, `ss.fusion_subjects`,
     `ss.doc_level`(학년: `render.level_key`·`grade_level`), `ss.footer_text`, `ss.answers_on`, 고른 성취기준 `ss.sel`. 위젯은 `w_*` 키 + `on_change=_sync`.
     (Streamlit은 그 화면에 그려지지 않은 위젯의 값을 지운다.) 학년마다 과목 목록이 달라 과목 위젯 키에 학년을 붙인다.
-  - 만들기는 `_run(req)` 하나로: `req`를 `ss.last_req`에 저장해 완성 화면의 '🔄 다시 만들기'에 쓴다.
+  - 만들기는 `_run(req)` 하나로: 요청을 `ss.generation_task`에 깊은 사본으로 보관하고 전용 진행 화면으로 먼저 이동한다.
+    `page_generation_running`은 queued 요청만 `_run_generation`으로 실행하고, 실행 흔적만 남은 작업을 자동으로 중복 호출하지 않는다.
+    버튼 제출 값이 다음 화면 갱신에서 사라져도 보관한 요청으로 진행한다. 성공한 요청은 `ss.last_req`에 저장해 '🔄 다시 만들기'에 쓴다.
+    진행 화면에서는 브라우저 키 동기화 컴포넌트를 잠시 그리지 않고 키 저장/삭제·모델 변경·화면 이동을 비활성화한다. 자동 동기화나 설정 변경이 실행을 끊을 기회를 줄이며 키 저장 작업은 종료 후 이어서 처리한다.
+    예상한 생성 실패는 `ss.generation_failure`와 전용 실패 화면에 남기며 다음 갱신에서 지우지 않는다. 같은 설정으로 재시도하거나 설정을 복원해 돌아갈 수 있다.
+    생성 도중 화면 갱신/중단은 diagnostics.capture의 interrupted 상태를 finally에서 확인해, 초안이 있으면 검토 대기 화면, 없으면 실패 화면으로 보낸다.
+    예상하지 못한 앱 오류도 예외 원문 대신 한국어 안내를 표시한다. 백그라운드 생성 스레드나 화면 갱신 시 무조건 자동 재호출은 만들지 않는다.
   - 완성 화면: 왼쪽 탭(내용 고치기 `block_list` / 모양 `theme_gallery` / 제목·목표 `header_panel`+AI 채우기 / 더 많은 설정,
     `st.tabs(key="res_tab")`라 코드로 탭을 고를 수 있다), 오른쪽 미리보기 `preview_editor`.
   - **학습지 위에서 바로 고치기**: `render(edit=True)`가 블록마다 `data-bi`(blocks.html.j2의 `{{ ed }}`)를 달고
