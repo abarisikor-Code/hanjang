@@ -121,7 +121,10 @@
   단계 예산은 바깥 전체 제한을 연장하지 않는다. 수정·재검토 때 시간을 새로 주지 않으며 초안 보관 뒤 수동 재개는 기존120초다.
   검토·수정에 성공한 모델을 checkpoint.preferred에 남겨 다음 단계에서 우선 사용한다. 실패하면 기존 대체 순서를 따른다.
   checkpoint.requested_model은 사용자가 고른 모델이다. 수동 재개 때 선택을 바꾸지 않았다면 직전 성공 모델을 유지하고, 선택을 바꾸면 새 선택을 우선한다. 예전 checkpoint도 읽는다.
-  예산 안의 `_generate`는 공개 `models.generate_content`를 사용한다. thinking_level=high와 JSON 응답 조건은 유지한다.
+  예산 안의 `_generate`는 공개 `models.generate_content`를 사용한다. JSON 응답 조건은 유지한다.
+  새 생성의 초안 구간만 `_draft_thinking` ContextVar로 `DRAFT_THINKING="medium"`을 적용한다. 초안의 대체·조건부 회복 요청도medium이다.
+  초안 구간을 벗어나면 finally로 추론 설정을 복원해 필수 검토·수정·수동 검토 재개와 기존 자료 분석은 `THINKING="high"`를 유지한다.
+  진단 기록에는 실제 적용한 추론 수준을 남긴다. 요청 횟수·전체 예산·정확성 검토를 줄이거나 초안을 검토 없이 완성본으로 내보내지는 않는다.
   요청별 http_options의 일반 제한은 min(60초, 남은 예산)이며 마지막 대체 모델은 min(90초, 남은 예산)이다.
   `_request_timeout_limit` ContextVar를 해당 호출에서만 바꾸고 finally로 복원한다. 다음 일반 요청은 다시60초다.
   retry_options.attempts=1로 SDK의 숨은 재시도를 막고 앱이 대체·회복 횟수를 관리한다. 전체210초와 수동 재개120초 제한은 연장하지 않는다.

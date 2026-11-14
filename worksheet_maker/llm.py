@@ -31,7 +31,8 @@ MODEL_LABELS = {
     "gemini-3.8-flash": "정밀 · gemini-3.8-flash (응답이 늦을 수 있어요)",
     "gemini-3.6-flash": "정밀 · gemini-3.6-flash (응답이 늦을 수 있어요)",
 }
-THINKING = "high"  # 계산·사실 실수를 줄이려면 많이 생각하게 한다 (lite 기준 시간 차이는 수십 초 이내)
+THINKING = "high"  # 필수 내용 검토·수정·기존 자료 분석의 추론 수준
+DRAFT_THINKING = "medium"  # 초안은 응답 부담을 줄이고 별도 high 검토에서 정확성을 확인한다.
 REQUEST_TIMEOUT = 100  # 초. 통신 대기 제한이며, SDK 내부 재시도 때문에 모델 대체까지는 더 걸릴 수 있다.
 GENERATION_REQUEST_TIMEOUT = 60
 FALLBACK_REQUEST_TIMEOUT = 90
@@ -42,6 +43,7 @@ GENERATION_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-fl
 _budget_deadline: ContextVar = ContextVar("generation_deadline", default=None)
 _budget_started: ContextVar = ContextVar("generation_started", default=None)
 _request_timeout_limit: ContextVar = ContextVar('generation_request_timeout_limit', default=None)
+_thinking_level: ContextVar = ContextVar('generation_thinking_level', default=None)
 RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 503만 _with_retry에서 시간에 따라 조건부 1회 회복한다.
 
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
@@ -110,6 +112,15 @@ def with_generation_budget(fn):
         with generation_budget():
             return fn(*args, **kwargs)
     return run
+
+
+@contextmanager
+def _draft_thinking():
+    token = _thinking_level.set(DRAFT_THINKING)
+    try:
+        yield
+    finally:
+        _thinking_level.reset(token)
 
 
 @contextmanager
@@ -236,11 +247,12 @@ def _generate(client, model: str, prompt: str, files: list[Attachment], schema: 
         from google.genai import types
         request_limit = _request_timeout_limit.get() or GENERATION_REQUEST_TIMEOUT
         timeout_ms = max(1, int(min(request_limit, remaining) * 1000))
-        diagnostics.emit('request_settings', model=model, thinking=THINKING,
+        thinking = _thinking_level.get() or THINKING
+        diagnostics.emit('request_settings', model=model, thinking=thinking,
                          timeout_seconds=timeout_ms / 1000, remaining_seconds=remaining,
                          prompt_chars=len(prompt), attachment_count=len(files))
         config = {"response_mime_type": "application/json", "response_json_schema": schema,
-                  "thinking_config": {"thinking_level": THINKING},
+                  "thinking_config": {"thinking_level": thinking},
                   "http_options": {"timeout": timeout_ms, "retry_options": {"attempts": 1}}}
         contents = [prompt] + [types.Part.from_bytes(data=f.data, mime_type=f.mime_type) for f in files]
         result = client.models.generate_content(model=model, contents=contents, config=config)
@@ -683,7 +695,7 @@ def _generate_for_request(client, model: str, prompt: str, *, request: str, cont
             return plan, ws
 
         try:
-            with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True):
+            with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True), _draft_thinking():
                 (plan, ws), used = _with_retry(order, design, stage="1단계 · 초안 설계", recover_busy=True)
             if ws is not None:
                 return _review_saved_draft(client, dict(mode="activity", draft=plan, used=used, requested_model=model, prompt=plan_prompt,
@@ -714,7 +726,7 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
         except (AnalyzeError, ValueError, TypeError, AttributeError) as exc:
             raise _BrokenOutput("새 학습지 응답을 읽지 못했습니다.") from exc
 
-    with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True):
+    with generation_phase_budget(DRAFT_TIME_BUDGET, from_start=True), _draft_thinking():
         ws, used = _with_retry(order, lambda chosen: design(chosen, prompt), stage="1단계 · 초안 만들기", recover_busy=True)
     return _review_saved_draft(client, dict(mode="worksheet", draft=ws.model_dump(), used=used, requested_model=model, prompt=prompt,
         request=request, context=context, n_questions=n_questions, kind=kind,
