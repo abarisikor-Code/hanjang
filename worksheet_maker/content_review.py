@@ -10,7 +10,7 @@ def question_count(ws: Worksheet) -> int:
     return sum(len(b.items) if b.type == "drill" else 1 for b in ws.blocks if b.type in QUESTION_TYPES)
 
 
-def structure_issues(ws: Worksheet, kind: str, n: int) -> list[dict]:
+def structure_issues(ws: Worksheet, kind: str, n: int, *, task_type: str | None = None) -> list[dict]:
     problems = []
     if question_count(ws) != n:
         problems.append(f"요청한 {n}개와 실제 {question_count(ws)}개가 다릅니다. 연습 묶음은 items 한 줄을 한 문제로 셉니다.")
@@ -23,6 +23,22 @@ def structure_issues(ws: Worksheet, kind: str, n: int) -> list[dict]:
         problems.append("배운 내용 확인에 풀이 힌트·활동·목표·소제목이 들어 있습니다.")
     if types & {"cornell", "bingo"}:
         problems.append("새 유형에는 개념 빈칸 노트와 빙고판을 쓰지 않습니다.")
+    if task_type == "story" and n >= 4:
+        # 제목·과목 표시와 독립 문항만 있는 초안을 이야기형 완성본으로 내보내지 않는다.
+        # 이 검사는 장면 사이 자료 배치만 보증한다. 사건 연결의 의미는 AI 검토가 맡는다.
+        seen_question = intro = later_scene = scene_between = False
+        for block in ws.blocks:
+            if block.type in {"reading", "text"} and block.body.strip():
+                if seen_question:
+                    later_scene = True
+                else:
+                    intro = True
+            if block.type in QUESTION_TYPES:
+                if later_scene:
+                    scene_between = True
+                seen_question = True
+        if not intro or not scene_between:
+            problems.append("이야기형에 도입과 문항 사이의 후속 장면 자료가 없습니다. 같은 사건의 도입 → 문항 → 후속 장면 → 문항으로 이어지게 하고, 각 풀이 결과를 단서 판단과 마지막 사건 해결에 사용해야 합니다.")
     return [dict(category="material", question=0, evidence=p, fix="고정된 유형과 문항 수에 맞게 자료·문항·정답을 함께 수정한다.") for p in problems]
 
 

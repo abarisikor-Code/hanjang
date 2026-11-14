@@ -771,7 +771,7 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
                 raise ReviewInterrupted(str(exc), state) from exc
             state['preferred'] = reviewed_with
             if mode == "worksheet":
-                issues = content_review.structure_issues(ws, kind, n) + issues
+                issues = content_review.structure_issues(ws, kind, n, task_type=state['task_type']) + issues
             issues, proven = verify.resolve_reading_issues(ws, issues)
             if proven:
                 diagnostics.emit('verification', verified_answers=len(proven))

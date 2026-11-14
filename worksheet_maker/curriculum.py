@@ -189,6 +189,8 @@ def limits(grade: int, subject: str, chosen: list[Standard] | None = None) -> st
         inside = f"{grade}학년에서는 '{here}'까지만 다룬다. 그 안의 내용은" if here else f"{grade}학년 범위 안이다. 이 성취기준이 다루는 내용은"
         lines.append(f"- 이 학습지의 성취기준 [{s.code}] {s.text} — {inside} "
                      "아래 '아직 배우지 않은 내용'과 낱말이 겹쳐 보여도 쓸 수 있다.")
+        if s.explain:
+            lines.append(f"- [{s.code}] 성취기준 해설·내용 제한(반드시 지킴): {s.explain}")
         if not here and s.when:
             lines.append(f"- [{s.code}] 배우는 때: {s.when}")
     later: dict[int, list[str]] = {}
