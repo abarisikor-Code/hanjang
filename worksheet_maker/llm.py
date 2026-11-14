@@ -22,7 +22,7 @@ from . import kinds as kinds_mod
 from .schema import BLOCK_TYPES, QUESTION_TYPES, Worksheet, component_guide, response_schema
 from .theme import Theme
 
-# 첫 번째가 기본. 빠른 503은 조건부 1회 회복하고, 그 밖에는 다음 모델로 넘어간다.
+# 첫 번째가 기본. 시간이 충분한 503은 조건부 1회 회복하고, 그 밖에는 다음 모델로 넘어간다.
 # 2026-10 실측(3학년 수학 8문항): 3.5-flash-lite+생각 많이 22초·정답 모두 맞음 / 3.6-flash 50초 /
 # 3.8·3.7-flash는 붐빌 때 거절(503)까지 2~3분이 걸렸고, 무료 키는 3.8-flash가 하루 20회로 제한된다.
 MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash"]
@@ -34,13 +34,15 @@ MODEL_LABELS = {
 THINKING = "high"  # 계산·사실 실수를 줄이려면 많이 생각하게 한다 (lite 기준 시간 차이는 수십 초 이내)
 REQUEST_TIMEOUT = 100  # 초. 통신 대기 제한이며, SDK 내부 재시도 때문에 모델 대체까지는 더 걸릴 수 있다.
 GENERATION_REQUEST_TIMEOUT = 60
+FALLBACK_REQUEST_TIMEOUT = 90
 GENERATION_TIME_BUDGET = 210
 DRAFT_TIME_BUDGET = 90
 REVIEW_TIME_BUDGET = 120
 GENERATION_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"]
 _budget_deadline: ContextVar = ContextVar("generation_deadline", default=None)
 _budget_started: ContextVar = ContextVar("generation_started", default=None)
-RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 빠른 503만 _with_retry에서 조건부 1회 회복한다.
+_request_timeout_limit: ContextVar = ContextVar('generation_request_timeout_limit', default=None)
+RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 503만 _with_retry에서 시간에 따라 조건부 1회 회복한다.
 
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
 progress: ContextVar = ContextVar("progress", default=None)
@@ -231,7 +233,8 @@ def _generate(client, model: str, prompt: str, files: list[Attachment], schema: 
             raise _BudgetExpired("남은 대기 시간이 너무 짧아 새 요청을 보내지 않고 멈췄어요. 검토하지 못한 초안은 완성본으로 내보내지 않았습니다.")
         # 새 생성에서는 공개 generate_content 통신을 써 요청당 1회와 남은 시간을 적용한다.
         from google.genai import types
-        timeout_ms = max(1, int(min(GENERATION_REQUEST_TIMEOUT, remaining) * 1000))
+        request_limit = _request_timeout_limit.get() or GENERATION_REQUEST_TIMEOUT
+        timeout_ms = max(1, int(min(request_limit, remaining) * 1000))
         diagnostics.emit('request_settings', model=model, thinking=THINKING,
                          timeout_seconds=timeout_ms / 1000, remaining_seconds=remaining,
                          prompt_chars=len(prompt), attachment_count=len(files))
@@ -463,7 +466,12 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답", recover_bus
                 request_start = time.perf_counter()
                 response_done = False
                 record('request_start', m)
-                result = call(m)
+                last_alternative = n > 0 and n == len(order) - 1 and m != order[0]
+                limit_token = _request_timeout_limit.set(FALLBACK_REQUEST_TIMEOUT if last_alternative else None)
+                try:
+                    result = call(m)
+                finally:
+                    _request_timeout_limit.reset(limit_token)
                 response_done = True
                 record('request_end', m, outcome='success', duration_seconds=time.perf_counter() - request_start)
                 check_budget()
@@ -484,12 +492,12 @@ def _with_retry(order: list[str], call, *, stage: str = "AI 응답", recover_bus
                 failures.append(f"{m}: {names.get(kind, names['other'])}"
                                 + (f" ({status})" if status else "") + f", {seconds:.1f}초")
                 previous_kind = kind
-                # 빠르게 거절된 기본 모델은 한 번 회복 기회를 준다. 오래 걸린 실패나
-                # 시간 초과·키·한도 오류는 반복하지 않는다. 최대 네 요청, SDK 재시도는 계속 끈다.
+                # 503은 첫 모델에만 한 번 회복 기회를 준다. 대기 후 요청당 제한 시간만큼
+                # 남아 있다면15초 경계 때문에 건너뛰지 않는다. 시간 초과·키·한도 오류는 반복하지 않는다.
                 deadline = _budget_deadline.get()
                 remaining = deadline - time.perf_counter() if deadline is not None else 0
-                if (recover_busy and n == 0 and m == MODELS[0] and status == 503
-                        and seconds <= 15 and remaining >= 30):
+                retry_fits = remaining >= GENERATION_REQUEST_TIMEOUT + 3 or (seconds <= 15 and remaining >= 30)
+                if recover_busy and n == 0 and status == 503 and retry_fits:
                     order.insert(1, m)
                 if kind in ("busy", "timeout", "output"):
                     continue  # 준비한 다음 요청으로: 조건부 회복 또는 다음 모델

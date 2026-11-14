@@ -1,5 +1,6 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import httpx
 
@@ -72,8 +73,8 @@ class RecoveryTests(unittest.TestCase):
                 llm._with_retry(llm.GENERATION_MODELS, request, recover_busy=True)
         self.assertEqual(called, llm.GENERATION_MODELS)
 
-    def test_slow_503_timeouts_and_quota_do_not_repeat_the_same_model(self):
-        for code, duration in ((503, 16), (504, 2), (429, 2), (403, 2)):
+    def test_timeouts_and_quota_do_not_repeat_the_same_model(self):
+        for code, duration in ((504, 2), (429, 2), (403, 2)):
             clock, called = [0.0], []
             error = type('ServiceError', (Exception,), {'code': code})
             def request(model):
@@ -84,6 +85,65 @@ class RecoveryTests(unittest.TestCase):
                 with llm.generation_budget(), self.assertRaises(llm.AnalyzeError):
                     llm._with_retry(llm.GENERATION_MODELS, request, recover_busy=True)
             self.assertEqual(called, [llm.MODELS[0]] if code == 403 else llm.GENERATION_MODELS)
+
+    def test_503_after_17_seconds_can_recover_on_any_first_model_with_enough_time(self):
+        for first in ('gemini-3.5-flash-lite', 'gemini-3.6-flash'):
+            clock, called = [0.0], []
+            def request(model):
+                called.append(model)
+                clock[0] += 17.5 if len(called) == 1 else 12
+                if len(called) == 1:
+                    raise Busy()
+                return 'ok'
+            with self.subTest(first=first), patch.object(llm.time, 'perf_counter', side_effect=lambda:clock[0]), \
+                 patch.object(llm.time, 'sleep', side_effect=lambda seconds:clock.__setitem__(0,clock[0]+seconds)), \
+                 patch.object(llm.random, 'uniform', return_value=2.5), llm.generation_budget():
+                result, used = llm._with_retry(llm._design_order(first), request, recover_busy=True)
+            self.assertEqual(called, [first, first])
+            self.assertEqual(used, first)
+            self.assertEqual(result, 'ok')
+            self.assertEqual(clock[0], 32)
+
+    def test_slow_503_without_time_for_a_full_retry_switches_instead(self):
+        clock, called = [0.0], []
+        def request(model):
+            called.append(model)
+            clock[0] += 17.5 if len(called) == 1 else 1
+            if len(called) == 1:
+                raise Busy()
+            return 'ok'
+        with patch.object(llm.time, 'perf_counter', side_effect=lambda:clock[0]), \
+             patch.object(llm.time, 'sleep'), llm.generation_budget(45):
+            llm._with_retry(llm.GENERATION_MODELS, request, recover_busy=True)
+        self.assertEqual(called, llm.GENERATION_MODELS[:2])
+
+    def test_final_fallback_can_use_90_seconds_and_next_request_returns_to_60(self):
+        observed = []
+        def send(request, **kwargs):
+            observed.append(request.headers.get('X-Server-Timeout'))
+            if len(observed) == 1:
+                return httpx.Response(503, request=request, json={'error':{'code':503,'message':'busy'}})
+            return httpx.Response(200, request=request, json={'candidates':[{'content':{'parts':[{'text':'{"ok":true}'}]}}]})
+        client = llm._generation_client('offline-key')
+        try:
+            with patch('httpx.Client.send', side_effect=send), patch.object(llm.time, 'sleep'), llm.generation_budget():
+                llm._with_retry(llm.GENERATION_MODELS[:2], lambda model:llm._generate(client,model,'점검',[],{}))
+                llm._generate(client,llm.MODELS[0],'다음 일반 요청',[],{})
+        finally:
+            client.close()
+        self.assertEqual(observed, ['60','90','60'])
+
+    def test_final_fallback_never_exceeds_remaining_total_time(self):
+        configs=[]
+        def send(**kwargs):
+            configs.append(kwargs['config']['http_options']['timeout'])
+            if len(configs)==1:
+                raise Busy()
+            return SimpleNamespace(text='{"ok":true}')
+        client=SimpleNamespace(models=SimpleNamespace(generate_content=send))
+        with patch.object(llm.time,'perf_counter',return_value=0), patch.object(llm.time,'sleep'), llm.generation_budget(75):
+            llm._with_retry(llm.GENERATION_MODELS[:2],lambda model:llm._generate(client,model,'점검',[],{}))
+        self.assertEqual(configs,[60000,75000])
 
     def test_slow_draft_does_not_take_the_review_window(self):
         clock, windows = [0.0], []
