@@ -12,7 +12,7 @@ from repair_fixtures import worksheet_patch
 class FusionTests(unittest.TestCase):
     def test_task_survives_generation_review_and_repair(self):
         ws = Worksheet(title='이야기', kind='inquiry', blocks=[Block(type='essay', body='사건의 해결을 설명하세요.', answer='답')])
-        issue = {'category': 'linkage', 'question': 1, 'evidence': '사건이 이어지지 않음', 'fix': '같은 사건으로 연결'}
+        issue = {'category': 'answer', 'question': 1, 'evidence': '정답이 잘못됨', 'fix': '정답 바로잡기'}
         outputs = [ws.model_dump_json(), json.dumps({'issues': [issue]}), json.dumps(worksheet_patch(ws)), '{"issues": []}']
         with patch.object(llm, '_generate', side_effect=outputs) as call:
             llm._generate_for_request(None, llm.MODELS[0], fusion.rule('story', ['국어', '수학'], 'inquiry'),

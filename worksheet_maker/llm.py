@@ -47,6 +47,7 @@ RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 503만 _with_re
 # 진행 상황을 화면에 알리는 함수 (app이 넣어 준다). 예: progress.set(lambda msg: status.update(label=msg))
 progress: ContextVar = ContextVar("progress", default=None)
 checkpoint_progress: ContextVar = ContextVar("generation_checkpoint", default=None)
+LAST_GENERATION_NOTES: ContextVar = ContextVar("generation_notes", default=())
 
 
 def _save_checkpoint(state: dict) -> None:
@@ -721,6 +722,7 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
 
 
 def _review_saved_draft(client, checkpoint: dict, *, use_remaining_budget: bool = False) -> tuple[str, str]:
+    LAST_GENERATION_NOTES.set(())
     deadline = _budget_deadline.get()
     # 새 생성은 초안에서 아낀 시간을 버리지 않는다. 수동 재개는 기존120초다.
     seconds = max(0, deadline - time.perf_counter()) if use_remaining_budget and deadline is not None else REVIEW_TIME_BUDGET
@@ -748,6 +750,31 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
         return ws.model_dump(), ws
 
     _, ws = decode(state["draft"])
+
+    def required_issues(issues):
+        # 융합의 연결·반복은 완성을 막는 오류가 아니라 선생님이 참고할 개선 안내다.
+        # 정답·범위·자료·답 노출·현실성 오류는 기존대로 수정하고 전체 재검토한다.
+        if not state.get('task_type'):
+            return issues
+        notes = list(state.get('advisories', []))
+        required = []
+        for issue in issues:
+            if issue['category'] in {'linkage', 'repetition'}:
+                note = (f"{issue['question']}번: " if issue['question'] else '') + issue['evidence']
+                if note not in notes:
+                    notes.append(note)
+            else:
+                required.append(issue)
+        state['advisories'] = notes
+        LAST_GENERATION_NOTES.set(tuple(notes))
+        return required
+
+    # 예전 버전에서 연결 부족만으로 수정 대기 중인 초안도 다시 만들 필요가 없다.
+    if state['phase'] == 'repair':
+        had_issues = bool(state['issues'])
+        state['issues'] = required_issues(state['issues'])
+        if had_issues and not state['issues']:
+            return ws.model_dump_json(), state['used']
     while True:
         _save_checkpoint(state)
         order = _design_order(state.get("preferred", state["used"]))
@@ -781,6 +808,7 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
                     questions = [b for b in ws.blocks if b.type in QUESTION_TYPES]
                     for number in proven:
                         state['draft']['questions'][number - 1]['solution'] = questions[number - 1].solution
+            issues = required_issues(issues)
             if not issues:
                 return ws.model_dump_json(), state["used"]
             if state["attempt"] == 2:

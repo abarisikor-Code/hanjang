@@ -36,15 +36,45 @@ class StoryScopeTests(unittest.TestCase):
         ws.blocks.insert(4, Block(type='reading', body='찾은 단서를 따라 두 번째 전시실로 갔습니다.'))
         self.assertFalse(content_review.structure_issues(ws, 'inquiry', 4, task_type='story'))
 
-    def test_empty_ai_reviews_cannot_release_story_without_later_scenes(self):
+    def test_missing_scenes_are_advisory_and_do_not_trigger_extra_calls(self):
         ws = self.worksheet()
-        outputs = [ws.model_dump_json(), '{"issues": []}', json.dumps(worksheet_patch(ws)),
-                   '{"issues": []}', json.dumps(worksheet_patch(ws)), '{"issues": []}']
+        outputs = [ws.model_dump_json(), '{"issues": []}']
         with patch.object(llm, '_generate', side_effect=outputs) as generate:
-            with self.assertRaises(llm.AnalyzeError):
-                llm._generate_for_request(None, llm.MODELS[0], '이야기 만들기', request='',
-                    context='4학년', n_questions=4, kind='inquiry', task_type='story', subjects=['수학', '과학'])
-        self.assertEqual(generate.call_count, 6)
+            raw, _ = llm._generate_for_request(None, llm.MODELS[0], '이야기 만들기', request='',
+                context='4학년', n_questions=4, kind='inquiry', task_type='story', subjects=['수학', '과학'])
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(Worksheet.model_validate_json(raw), ws)
+        self.assertIn('후속 장면', ' '.join(llm.LAST_GENERATION_NOTES.get()))
+
+    def test_mixed_findings_repair_only_required_errors_and_recheck(self):
+        ws = self.worksheet()
+        soft = dict(category='linkage', question=0, evidence='사건과 문항의 연결이 부족함', fix='연결 개선')
+        hard = dict(category='answer', question=1, evidence='정답이 틀림', fix='정답 수정')
+        outputs = [ws.model_dump_json(), json.dumps({'issues': [soft, hard]}),
+                   json.dumps(worksheet_patch(ws)), json.dumps({'issues': [soft]})]
+        with patch.object(llm, '_generate', side_effect=outputs) as generate:
+            llm._generate_for_request(None, llm.MODELS[0], '이야기 만들기', request='',
+                context='4학년', n_questions=4, kind='inquiry', task_type='story', subjects=['수학', '과학'])
+        self.assertEqual(generate.call_count, 4)
+        repair = generate.call_args_list[2].args[2]
+        self.assertIn('정답이 틀림', repair)
+        self.assertNotIn('사건과 문항의 연결이 부족함', repair)
+
+    def test_old_connection_only_checkpoint_completes_without_more_calls(self):
+        ws = self.worksheet()
+        state = dict(mode='worksheet', draft=ws.model_dump(), kind='inquiry', n_questions=4,
+            used=llm.MODELS[0], task_type='story', subjects=['수학', '과학'], attempt=2,
+            phase='repair', prompt='', request='', context='',
+            issues=[dict(category='repetition', question=1, evidence='유사 문제 반복', fix='다양화')])
+        with patch.object(llm, '_generate') as generate:
+            raw, _ = llm._review_saved_draft(None, state)
+        generate.assert_not_called()
+        self.assertEqual(Worksheet.model_validate_json(raw), ws)
+        self.assertEqual(llm.LAST_GENERATION_NOTES.get(), ('1번: 유사 문제 반복',))
+        state.update(phase='review', task_type=None, issues=[])
+        with patch.object(llm, '_generate', return_value='{"issues": []}'):
+            llm._review_saved_draft(None, state)
+        self.assertFalse(llm.LAST_GENERATION_NOTES.get())
 
 
 if __name__ == '__main__':

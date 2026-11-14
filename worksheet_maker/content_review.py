@@ -39,7 +39,8 @@ def structure_issues(ws: Worksheet, kind: str, n: int, *, task_type: str | None 
                 seen_question = True
         if not intro or not scene_between:
             problems.append("이야기형에 도입과 문항 사이의 후속 장면 자료가 없습니다. 같은 사건의 도입 → 문항 → 후속 장면 → 문항으로 이어지게 하고, 각 풀이 결과를 단서 판단과 마지막 사건 해결에 사용해야 합니다.")
-    return [dict(category="material", question=0, evidence=p, fix="고정된 유형과 문항 수에 맞게 자료·문항·정답을 함께 수정한다.") for p in problems]
+    return [dict(category="linkage" if p.startswith("이야기형") else "material", question=0,
+                 evidence=p, fix="고정된 유형과 문항 수에 맞게 자료·문항·정답을 함께 수정한다.") for p in problems]
 
 
 def prompt(ws: Worksheet, *, context: str, request: str, kind: str, n: int,

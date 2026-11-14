@@ -43,6 +43,23 @@ class GenerationPageTests(unittest.TestCase):
     def result(self):
         return llm.AnalyzeResult(worksheet=self.worksheet(), theme=None, model_used=llm.MODELS[0])
 
+    def test_connection_warning_reaches_result_and_survives_screen_refresh(self):
+        app = self.ready()
+        issue = dict(category='linkage', question=0, evidence='과목 사이 연결이 약해요.', fix='연결 개선')
+        with patch.object(llm, '_generation_client', return_value=SimpleNamespace(close=lambda:None)), \
+             patch.object(llm, '_generate', side_effect=[self.worksheet().model_dump_json(),
+                   json.dumps({'issues': [issue]})]) as call:
+            self.submit(app)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(app.session_state['page'], 'result')
+        self.assertTrue(any(e.label == '이야기·구성 참고 사항' for e in app.expander))
+        self.assertIn('과목 사이 연결이 약해요.', app.session_state['generation_notes'])
+        self.assertTrue(any(b.proto.label == '💾 편집용 HTML 저장' for b in app.get('download_button')))
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state['page'], 'result')
+        self.assertTrue(any(e.label == '이야기·구성 참고 사항' for e in app.expander))
+
     def test_draft_failure_is_a_persistent_page_and_retry_uses_the_same_request(self):
         app = self.ready()
         app.text_input(key='f_theme_text').set_value('우리 반 책 나눔')
