@@ -50,6 +50,7 @@ RETRY_WAITS: tuple[int, ...] = ()  # 일괄 재시도는 끈다. 503만 _with_re
 progress: ContextVar = ContextVar("progress", default=None)
 checkpoint_progress: ContextVar = ContextVar("generation_checkpoint", default=None)
 LAST_GENERATION_NOTES: ContextVar = ContextVar("generation_notes", default=())
+LAST_GENERATION_WARNINGS: ContextVar = ContextVar("generation_warnings", default=())
 
 
 def _save_checkpoint(state: dict) -> None:
@@ -735,6 +736,8 @@ def _generate_reviewed_worksheet(client, model, prompt, *, request, context, n_q
 
 def _review_saved_draft(client, checkpoint: dict, *, use_remaining_budget: bool = False) -> tuple[str, str]:
     LAST_GENERATION_NOTES.set(())
+    LAST_GENERATION_WARNINGS.set(())
+    LAST_FIXES.set([])
     deadline = _budget_deadline.get()
     # 새 생성은 초안에서 아낀 시간을 버리지 않는다. 수동 재개는 기존120초다.
     seconds = max(0, deadline - time.perf_counter()) if use_remaining_budget and deadline is not None else REVIEW_TIME_BUDGET
@@ -750,29 +753,43 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
     mode, kind, n = state["mode"], state["kind"], state["n_questions"]
     if mode not in ("activity", "worksheet") or state["phase"] not in ("review", "repair") or not 0 <= state["attempt"] <= 2:
         raise AnalyzeError("보관한 초안의 검토 정보를 읽지 못했어요. 설정을 확인하고 새로 만들어 주세요.")
+    m = re.search(r"([1-6])\s*학년", state.get("context", ""))
+    reduce_frac = int(m.group(1)) >= 5 if m else True
 
     def decode(data):
         if mode == "activity":
             ws = activity.to_worksheet(data, n, kind=kind)
             if ws is None:
                 raise ValueError("공동 상황이 없습니다.")
+            fixes = verify.check(ws, reduce=reduce_frac)
+            if fixes:
+                LAST_FIXES.set(list(dict.fromkeys([*LAST_FIXES.get(), *fixes])))
+                questions = [b for b in ws.blocks if b.type in QUESTION_TYPES]
+                if len(questions) == len(data.get("questions", [])):
+                    for q_dict, q_block in zip(data["questions"], questions):
+                        q_dict["answer"] = q_block.answer
+                        q_dict["solution"] = q_block.solution
             return data, ws
         ws = Worksheet.model_validate(data.get("worksheet", data))
         ws.kind = kind
+        fixes = verify.check(ws, reduce=reduce_frac)
+        if fixes:
+            LAST_FIXES.set(list(dict.fromkeys([*LAST_FIXES.get(), *fixes])))
         return ws.model_dump(), ws
 
-    _, ws = decode(state["draft"])
+    state["draft"], ws = decode(state["draft"])
+
+    def format_issue(issue):
+        return (f"{issue['question']}번: " if issue['question'] else '') + issue['evidence']
 
     def required_issues(issues):
-        # 융합의 연결·반복은 완성을 막는 오류가 아니라 선생님이 참고할 개선 안내다.
+        # 한 과목·융합 모두 연결·반복은 완성을 막는 오류가 아니라 선생님이 참고할 개선 안내다.
         # 정답·범위·자료·답 노출·현실성 오류는 기존대로 수정하고 전체 재검토한다.
-        if not state.get('task_type'):
-            return issues
         notes = list(state.get('advisories', []))
         required = []
         for issue in issues:
             if issue['category'] in {'linkage', 'repetition'}:
-                note = (f"{issue['question']}번: " if issue['question'] else '') + issue['evidence']
+                note = format_issue(issue)
                 if note not in notes:
                     notes.append(note)
             else:
@@ -820,11 +837,28 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
                     questions = [b for b in ws.blocks if b.type in QUESTION_TYPES]
                     for number in proven:
                         state['draft']['questions'][number - 1]['solution'] = questions[number - 1].solution
+            categories = {}
+            for item in issues:
+                cat = item.get('category')
+                if isinstance(cat, str):
+                    categories[cat] = categories.get(cat, 0) + 1
+            before_count = len(issues)
             issues = required_issues(issues)
+            diagnostics.emit('review_findings', stage="2단계 · 내용 검토", model=reviewed_with,
+                             required_issues=len(issues), advisory_issues=before_count - len(issues),
+                             unresolved_issues=len(issues) if state["attempt"] == 2 else 0,
+                             categories=categories)
             if not issues:
                 return ws.model_dump_json(), state["used"]
             if state["attempt"] == 2:
-                raise AnalyzeError("유형에 맞는 구성이나 내용을 충분히 바로잡지 못했어요. 같은 설정으로 다시 만들어 주세요.")
+                warnings = []
+                for issue in issues:
+                    w = format_issue(issue)
+                    if w not in warnings:
+                        warnings.append(w)
+                state['warnings'] = warnings
+                LAST_GENERATION_WARNINGS.set(tuple(warnings))
+                return ws.model_dump_json(), state["used"]
             state.update(issues=issues, phase="repair")
 
         _save_checkpoint(state)
@@ -862,7 +896,11 @@ def resume_generation(*, api_key: str, checkpoint: dict, grade: int, model: str 
     finally:
         client.close()
     ws = Worksheet.model_validate_json(raw)
-    return AnalyzeResult(worksheet=_postprocess(_with_kind(ws, state["kind"]), grade), theme=None, model_used=used)
+    prior_fixes = list(LAST_FIXES.get())
+    ws = _postprocess(_with_kind(ws, state["kind"]), grade)
+    if prior_fixes:
+        LAST_FIXES.set(list(dict.fromkeys([*prior_fixes, *LAST_FIXES.get()])))
+    return AnalyzeResult(worksheet=ws, theme=None, model_used=used)
 
 
 def generate_for_standards(
@@ -952,7 +990,11 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
         raise AnalyzeError(f"AI 응답이 학습지 구조와 맞지 않습니다. 다시 시도해 주세요.\n{e}") from e
     if not ws.subject:
         ws.subject = subject
-    return AnalyzeResult(worksheet=_postprocess(_with_kind(ws, kind), grade), theme=None, model_used=model_used)
+    prior_fixes = list(LAST_FIXES.get())
+    ws = _postprocess(_with_kind(ws, kind), grade)
+    if prior_fixes:
+        LAST_FIXES.set(list(dict.fromkeys([*prior_fixes, *LAST_FIXES.get()])))
+    return AnalyzeResult(worksheet=ws, theme=None, model_used=model_used)
 
 
 def generate_from_outline(
@@ -1020,7 +1062,11 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
         ws = Worksheet.model_validate(data)
     except ValidationError as e:
         raise AnalyzeError(f"AI 응답이 학습지 구조와 맞지 않습니다. 다시 시도해 주세요.\n{e}") from e
-    return AnalyzeResult(worksheet=_postprocess(ws), theme=None, model_used=model_used)
+    prior_fixes = list(LAST_FIXES.get())
+    ws = _postprocess(ws)
+    if prior_fixes:
+        LAST_FIXES.set(list(dict.fromkeys([*prior_fixes, *LAST_FIXES.get()])))
+    return AnalyzeResult(worksheet=ws, theme=None, model_used=model_used)
 
 
 # ----- 과목융합형: 같은 학년의 두세 과목을 엮은 과제 -----
@@ -1200,7 +1246,11 @@ HTML, CSS, 디자인은 만들지 않는다. 모양은 프로그램이 정한다
         raise AnalyzeError(f"AI 응답이 학습지 구조와 맞지 않습니다. 다시 시도해 주세요.\n{e}") from e
     if not ws.subject:
         ws.subject = f"{joined} 융합"
-    return AnalyzeResult(worksheet=_postprocess(_with_kind(ws, kind), grade), theme=None, model_used=model_used)
+    prior_fixes = list(LAST_FIXES.get())
+    ws = _postprocess(_with_kind(ws, kind), grade)
+    if prior_fixes:
+        LAST_FIXES.set(list(dict.fromkeys([*prior_fixes, *LAST_FIXES.get()])))
+    return AnalyzeResult(worksheet=ws, theme=None, model_used=model_used)
 
 
 # ----- 말로 고르기: "3학년 수학 덧셈이랑 국어 발표" → 학년·과목·성취기준 -----

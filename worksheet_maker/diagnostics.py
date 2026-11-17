@@ -14,11 +14,13 @@ from uuid import uuid4
 _current: ContextVar = ContextVar('generation_diagnostics', default=None)
 _stages = {'AI 응답': 'ai', '1단계 · 초안 설계': 'draft',
            '1단계 · 초안 만들기': 'draft', '2단계 · 내용 검토': 'review', '검토 후 수정': 'repair'}
-_events = {'start', 'phase_budget', 'request_start', 'request_end', 'request_settings', 'wait', 'budget_stop', 'verification', 'finish'}
+_events = {'start', 'phase_budget', 'request_start', 'request_end', 'request_settings', 'wait', 'budget_stop', 'verification', 'review_findings', 'finish'}
 _outcomes = {'success', 'busy', 'timeout', 'quota', 'model', 'output', 'key', 'other',
              'pending_review', 'failed', 'interrupted', 'running', 'success_with_review_warning'}
 _numbers = {'remaining_seconds', 'duration_seconds', 'timeout_seconds', 'prompt_chars',
-            'attachment_count', 'http_status', 'wait_seconds', 'budget_seconds', 'verified_answers'}
+            'attachment_count', 'http_status', 'wait_seconds', 'budget_seconds', 'verified_answers',
+            'required_issues', 'advisory_issues', 'unresolved_issues'}
+_categories = {'realism', 'linkage', 'repetition', 'leakage', 'scope', 'answer', 'material'}
 
 
 def _utc():
@@ -64,6 +66,10 @@ def emit(event: str, *, stage: str | None = None, model: str | None = None,
     for key, value in values.items():
         if key in _numbers and type(value) in (int, float) and abs(value) < 1e12:
             row[key] = round(value, 3)
+        elif key == 'categories' and isinstance(value, dict):
+            counts = {k: int(v) for k, v in value.items() if k in _categories and type(v) is int and 0 < v < 1000}
+            if counts:
+                row['categories'] = counts
     if thinking in {'minimal', 'low', 'medium', 'high'}:
         row['thinking'] = thinking
     report['events'].append(row)

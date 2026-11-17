@@ -238,6 +238,7 @@ def _new_id() -> str:
 def set_worksheet(ws: Worksheet) -> None:
     st.session_state.pop("review_notes", None)  # 검토 결과는 그 학습지를 만든 직후에만 보여 준다
     st.session_state.pop("generation_notes", None)
+    st.session_state.pop("generation_warnings", None)
     st.session_state.pop("decoration", None)
     st.session_state.pop("art_error", None)
     st.session_state.result_view = "edit"
@@ -1681,6 +1682,9 @@ def _run_generation(req: dict, checkpoint: dict | None = None) -> None:
             fixes.append(f"AI 검토를 마치지 못했어요 — 문제와 정답을 한 번 더 확인해 주세요. ({str(e).splitlines()[0]})")
     set_worksheet(ws)
     ss.generation_notes = list(llm.LAST_GENERATION_NOTES.get())
+    ss.generation_warnings = list(llm.LAST_GENERATION_WARNINGS.get())
+    if ss.generation_warnings:
+        review_warning = True
     ss.review_notes = (bool(req.get("review", True)), fixes)
     ss.doc_level = grade_level(req["grade"])
     ss.last_req = req
@@ -2421,6 +2425,11 @@ def page_result() -> None:
             done = "AI 검토와 계산 검산을 거쳤지만" if reviewed else "계산 문제는 프로그램이 검산했지만"
             st.info(f"{done}, 아이에게 주기 전에 문제와 정답을 한 번 훑어봐 주세요.")
 
+    if ss.get('generation_warnings'):
+        st.warning('⚠️ 두 번 수정한 뒤에도 확인이 필요한 항목이 남아 있어요. 아래 항목을 꼭 살펴보고 필요한 부분을 직접 고쳐 사용해 주세요.')
+        with st.expander(f'⚠️ 꼭 확인해 주세요 ({len(ss.generation_warnings)}개)', expanded=True):
+            for warn in ss.generation_warnings:
+                st.write(warn)
     if ss.get('generation_notes'):
         st.info('학습지를 만들었어요. 이야기 연결이나 문제 구성에 대한 참고 사항이 있어요. 필요하면 내용을 고쳐 사용해 주세요.')
         with st.expander('이야기·구성 참고 사항'):

@@ -99,10 +99,21 @@ class ContentReviewTests(unittest.TestCase):
         self.assertIn('자료·조건·질문·선택지·정답·해설', repair)
         self.assertIn('430mL', call.call_args_list[3].args[2])
 
-    def test_still_unrealistic_after_two_repairs_stops(self):
-        with self.assertRaisesRegex(llm.AnalyzeError, '충분히 바로잡지 못했어요'):
-            self.run_plan([sample_plan(), {'issues': [issue()]}, sample_plan(), {'issues': [issue()]},
-                           sample_plan(), {'issues': [issue()]}])
+    def test_still_unrealistic_after_two_repairs_completes_with_warning(self):
+        (raw, _), call = self.run_plan([sample_plan(), {'issues': [issue()]}, sample_plan(), {'issues': [issue()]},
+                                        sample_plan(), {'issues': [issue()]}])
+        self.assertEqual(call.call_count, 6)
+        self.assertEqual(json.loads(raw)['title'], sample_plan()['title'])
+        self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('가족 네 명의 한 끼에 달걀 250개를 준비한다.',))
+
+    def test_single_subject_linkage_and_repetition_are_advisory_without_repair_calls(self):
+        soft = [dict(category='linkage', question=0, evidence='문항 사이 연결이 약함', fix='연결 보강'),
+                dict(category='repetition', question=2, evidence='비슷한 유형 반복', fix='다양화')]
+        (raw, _), call = self.run_plan([sample_plan(), {'issues': soft}])
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(json.loads(raw)['title'], sample_plan()['title'])
+        self.assertEqual(llm.LAST_GENERATION_NOTES.get(), ('문항 사이 연결이 약함', '2번: 비슷한 유형 반복'))
+        self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ())
 
     def test_new_issue_introduced_by_repair_can_be_fixed_once_more(self):
         fixed = sample_plan()

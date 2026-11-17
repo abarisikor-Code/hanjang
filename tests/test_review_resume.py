@@ -87,9 +87,10 @@ class ReviewResumeTests(unittest.TestCase):
         self.assertEqual(pending['draft']['title'], fixed.title)
         self.assertEqual(pending['attempt'], 2)
         bad_review = json.dumps({'issues':[dict(category='answer', question=1, evidence='남은 문제', fix='재수정 필요')]})
-        with self.assertRaises(llm.AnalyzeError) as error:
-            self.resume(pending, [bad_review])
-        self.assertNotIsInstance(error.exception, llm.ReviewInterrupted)
+        result, call = self.resume(pending, [bad_review])
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(result.worksheet.title, fixed.title)
+        self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('1번: 남은 문제',))
 
     def test_inquiry_resume_keeps_the_activity_materials_and_purpose(self):
         checkpoint = self.interrupted(activity=True)

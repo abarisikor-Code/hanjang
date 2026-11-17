@@ -81,3 +81,14 @@ class DiagnosticTests(unittest.TestCase):
                 diagnostics.finish('pending_review')
         self.assertTrue(any(r['event'] == 'budget_stop' and r['remaining_seconds'] == 0 for r in report['events']))
         self.assertFalse(any(r['event'] == 'request_start' for r in report['events']))
+
+    def test_review_findings_record_category_counts_only(self):
+        with diagnostics.capture('1.5.7') as report:
+            diagnostics.emit('review_findings', stage='2단계 · 내용 검토', model='gemini-3.5-flash-lite',
+                             required_issues=1, advisory_issues=1, unresolved_issues=0,
+                             categories={'answer': 1, 'linkage': 1, 'secret': 5})
+        row = next(r for r in report['events'] if r['event'] == 'review_findings')
+        self.assertEqual(row['stage'], 'review')
+        self.assertEqual(row['required_issues'], 1)
+        self.assertEqual(row['advisory_issues'], 1)
+        self.assertEqual(row['categories'], {'answer': 1, 'linkage': 1})

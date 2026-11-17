@@ -41,11 +41,17 @@ class FourKindsTests(unittest.TestCase):
         self.assertEqual(call.call_count, 4)
         self.assertEqual(json.loads(raw)['blocks'][0]['type'], 'concept')
 
-    def test_unresolved_general_review_stops_and_malformed_review_cannot_pass(self):
+    def test_unresolved_general_review_completes_with_warning_and_malformed_review_cannot_pass(self):
         ws = Worksheet(title='확인', blocks=[Block(type='short_answer', body='2+3', answer='5')])
         problem = dict(category='answer', question=1, evidence='잘못된 답', fix='다시 풀기')
-        outputs = [ws.model_dump_json(), json.dumps({'issues': [problem]})] * 3
-        with patch.object(llm, '_generate', side_effect=outputs), self.assertRaises(llm.AnalyzeError):
-            llm._generate_for_request(None, llm.MODELS[0], '지시', request='', context='1학년', n_questions=1, kind='test')
+        delta = {'header': {}, 'block_edits': []}
+        outputs = [ws.model_dump_json(), json.dumps({'issues': [problem]}),
+                   json.dumps(delta), json.dumps({'issues': [problem]}),
+                   json.dumps(delta), json.dumps({'issues': [problem]})]
+        with patch.object(llm, '_generate', side_effect=outputs) as call:
+            raw, _ = llm._generate_for_request(None, llm.MODELS[0], '지시', request='', context='1학년', n_questions=1, kind='test')
+        self.assertEqual(call.call_count, 6)
+        self.assertEqual(json.loads(raw)['title'], '확인')
+        self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('1번: 잘못된 답',))
         with patch.object(llm, '_generate', side_effect=[ws.model_dump_json(), '{}', '{}']), self.assertRaises(llm.AnalyzeError):
             llm._generate_for_request(None, llm.MODELS[0], '지시', request='', context='1학년', n_questions=1, kind='test')
