@@ -741,7 +741,7 @@ def _review_saved_draft(client, checkpoint: dict, *, use_remaining_budget: bool 
     deadline = _budget_deadline.get()
     # 새 생성은 초안에서 아낀 시간을 버리지 않는다. 수동 재개는 기존120초다.
     seconds = max(0, deadline - time.perf_counter()) if use_remaining_budget and deadline is not None else REVIEW_TIME_BUDGET
-    with generation_phase_budget(seconds):
+    with generation_phase_budget(seconds), _draft_thinking():
         return _review_saved_draft_in_budget(client, checkpoint)
 
 
@@ -798,11 +798,20 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
         LAST_GENERATION_NOTES.set(tuple(notes))
         return required
 
-    # 예전 버전에서 연결 부족만으로 수정 대기 중인 초안도 다시 만들 필요가 없다.
+    # 예전 버전에서 연결 부족만으로 수정 대기 중이거나 이미 1회 수정을 마친 초안은 다시 수정 호출을 하지 않는다.
     if state['phase'] == 'repair':
         had_issues = bool(state['issues'])
         state['issues'] = required_issues(state['issues'])
         if had_issues and not state['issues']:
+            return ws.model_dump_json(), state['used']
+        if state['attempt'] >= 1:
+            warnings = []
+            for issue in state['issues']:
+                w = format_issue(issue)
+                if w not in warnings:
+                    warnings.append(w)
+            state['warnings'] = warnings
+            LAST_GENERATION_WARNINGS.set(tuple(warnings))
             return ws.model_dump_json(), state['used']
     while True:
         _save_checkpoint(state)
@@ -846,11 +855,11 @@ def _review_saved_draft_in_budget(client, checkpoint: dict) -> tuple[str, str]:
             issues = required_issues(issues)
             diagnostics.emit('review_findings', stage="2단계 · 내용 검토", model=reviewed_with,
                              required_issues=len(issues), advisory_issues=before_count - len(issues),
-                             unresolved_issues=len(issues) if state["attempt"] == 2 else 0,
+                             unresolved_issues=len(issues) if state["attempt"] >= 1 else 0,
                              categories=categories)
             if not issues:
                 return ws.model_dump_json(), state["used"]
-            if state["attempt"] == 2:
+            if state["attempt"] >= 1:
                 warnings = []
                 for issue in issues:
                     w = format_issue(issue)
@@ -901,6 +910,39 @@ def resume_generation(*, api_key: str, checkpoint: dict, grade: int, model: str 
     if prior_fixes:
         LAST_FIXES.set(list(dict.fromkeys([*prior_fixes, *LAST_FIXES.get()])))
     return AnalyzeResult(worksheet=ws, theme=None, model_used=used)
+
+
+def open_saved_draft(*, checkpoint: dict, grade: int) -> AnalyzeResult:
+    """검토·수정 중 서버 오류로 멈춘 초안(또는 수정본)을 AI 호출 없이 경고 표시와 함께 완성본으로 연다."""
+    from . import activity
+
+    LAST_GENERATION_NOTES.set(())
+    LAST_GENERATION_WARNINGS.set(())
+    LAST_FIXES.set([])
+    state = copy.deepcopy(checkpoint)
+    mode, kind, n = state["mode"], state["kind"], state["n_questions"]
+    if mode == "activity":
+        ws = activity.to_worksheet(state["draft"], n, kind=kind)
+        if ws is None:
+            raise AnalyzeError("보관한 초안의 활동 정보를 읽지 못했어요. 새로 만들어 주세요.")
+    else:
+        data = state["draft"]
+        ws = Worksheet.model_validate(data.get("worksheet", data))
+    ws = _postprocess(_with_kind(ws, kind), grade)
+    notes = list(state.get("advisories", []))
+    warnings = []
+    for issue in state.get("issues", []):
+        text = (f"{issue['question']}번: " if issue.get("question") else "") + issue.get("evidence", "")
+        if issue.get("category") in {"linkage", "repetition"}:
+            if text and text not in notes:
+                notes.append(text)
+        elif text and text not in warnings:
+            warnings.append(text)
+    if not warnings:
+        warnings.append("AI 내용 검토가 끝나기 전에 열어 본 초안이에요. 문제·자료·정답을 꼭 한 번 확인해 주세요.")
+    LAST_GENERATION_NOTES.set(tuple(notes))
+    LAST_GENERATION_WARNINGS.set(tuple(warnings))
+    return AnalyzeResult(worksheet=ws, theme=None, model_used=state.get("used", MODELS[0]))
 
 
 def generate_for_standards(

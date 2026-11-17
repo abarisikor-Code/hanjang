@@ -1711,6 +1711,24 @@ def page_review_pending() -> None:
     st.info("잠시 후 아래 버튼을 눌러 주세요. 새 대기 시간으로 검토를 이어가며, 검토를 통과해야 완성본을 보여줘요. 수정 중 멈췄다면 남은 수정부터 이어가요.")
     if st.button("보관한 초안 검토만 다시 시도", type="primary", key="resume_review"):
         _run(req, checkpoint=pending["checkpoint"])
+    if st.button("경고 표시와 함께 보관한 초안 바로 열기", key="open_saved_draft"):
+        try:
+            result = llm.open_saved_draft(checkpoint=pending["checkpoint"], grade=req["grade"])
+        except llm.AnalyzeError as e:
+            st.error(str(e))
+            return
+        ss.pop("pending_generation", None)
+        set_worksheet(result.worksheet)
+        ss.generation_notes = list(llm.LAST_GENERATION_NOTES.get())
+        ss.generation_warnings = list(llm.LAST_GENERATION_WARNINGS.get())
+        ss.review_notes = (False, list(llm.LAST_FIXES.get()))
+        ss.doc_level = grade_level(req["grade"])
+        ss.last_req = req
+        ss.pop("nl_msg", None)
+        ss.open_id = None
+        ss.p_msg = ("success", f"'{result.worksheet.title}' 초안을 열었어요!")
+        ss.page = "result"
+        st.rerun()
     st.caption("초안은 현재 접속한 브라우저 세션에만 보관해요. 새로고침하거나 연결이 종료되면 사라질 수 있어요.")
     if st.button("설정 화면으로 돌아가기", key="pending_settings"):
         _return_generation_settings(req)
@@ -2426,7 +2444,7 @@ def page_result() -> None:
             st.info(f"{done}, 아이에게 주기 전에 문제와 정답을 한 번 훑어봐 주세요.")
 
     if ss.get('generation_warnings'):
-        st.warning('⚠️ 두 번 수정한 뒤에도 확인이 필요한 항목이 남아 있어요. 아래 항목을 꼭 살펴보고 필요한 부분을 직접 고쳐 사용해 주세요.')
+        st.warning('⚠️ 자동 수정 뒤에도 확인이 필요한 항목이 남아 있어요. 아래 항목을 꼭 살펴보고 필요한 부분을 직접 고쳐 사용해 주세요.')
         with st.expander(f'⚠️ 꼭 확인해 주세요 ({len(ss.generation_warnings)}개)', expanded=True):
             for warn in ss.generation_warnings:
                 st.write(warn)

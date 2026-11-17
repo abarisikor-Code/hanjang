@@ -20,13 +20,13 @@ class FusionTimeTests(unittest.TestCase):
         block = self.worksheet().blocks[0].model_copy(update={'body': text})
         return json.dumps({'header': {}, 'block_edits': [{'at':0, 'delete':1, 'values':[block.model_dump()]}]})
 
-    def test_busy_review_then_second_repair_uses_remaining_total_and_healthy_model(self):
+    def test_busy_review_then_repair_uses_remaining_total_and_healthy_model(self):
         # 서버 대기는 가상 시계로 재현한다. 실제 통신은 하지 않는다.
         clock, observed = [0.0], []
         problem = dict(category='material', question=1, evidence='자료 확인 필요', fix='자료에 맞게 문항 수정')
-        replies = [self.worksheet().model_dump_json(), json.dumps({'issues':[problem]}), self.delta('첫 번째 수정'),
-                   Busy(), Busy(), json.dumps({'issues':[problem]}), self.delta('두 번째 수정'), '{"issues":[]}']
-        durations = [15, 11, 22, 8, 8, 28, 30, 10]
+        replies = [self.worksheet().model_dump_json(), Busy(), Busy(), json.dumps({'issues':[problem]}),
+                   self.delta('첫 번째 수정'), '{"issues":[]}']
+        durations = [15, 8, 8, 28, 30, 10]
         def generate(client, model, prompt, files, schema):
             index = len(observed)
             observed.append((model, llm._remaining_time()))
@@ -42,11 +42,11 @@ class FusionTimeTests(unittest.TestCase):
              patch.object(llm, '_generate', side_effect=generate):
             raw, _ = llm._generate_for_request(None, llm.MODELS[0], '가상 융합 조건', request='', context='4학년 국어·수학',
                 n_questions=1, kind='inquiry', task_type='project', subjects=['국어','수학'])
-        self.assertEqual([model for model, _ in observed], [llm.MODELS[0]] * 5 + ['gemini-3.6-flash'] * 3)
-        self.assertGreater(observed[6][1], 100)
-        self.assertEqual(clock[0], 138.5)
+        self.assertEqual([model for model, _ in observed], [llm.MODELS[0]] * 3 + ['gemini-3.6-flash'] * 3)
+        self.assertGreater(observed[4][1], 100)
+        self.assertEqual(clock[0], 103.5)
         self.assertLess(clock[0], llm.GENERATION_TIME_BUDGET)
-        self.assertEqual(Worksheet.model_validate_json(raw).blocks[0].body, '두 번째 수정')
+        self.assertEqual(Worksheet.model_validate_json(raw).blocks[0].body, '첫 번째 수정')
 
     def test_fast_draft_can_donate_more_than_120_seconds_to_review(self):
         clock, remaining = [0.0], []

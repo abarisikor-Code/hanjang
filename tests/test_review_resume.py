@@ -79,18 +79,21 @@ class ReviewResumeTests(unittest.TestCase):
         checkpoint = self.interrupted()
         fixed = self.worksheet()
         fixed.title = '마지막 수정본'
-        checkpoint.update(attempt=1, phase='repair', issues=[dict(category='material', question=0, evidence='자료', fix='수정')])
+        checkpoint.update(attempt=0, phase='repair', issues=[dict(category='material', question=0, evidence='자료', fix='수정')])
         with patch.object(llm, '_generate', side_effect=[json.dumps(worksheet_patch(fixed)), Busy(), Busy(), Busy(), Busy()]), patch.object(llm.time, 'sleep'):
             with self.assertRaises(llm.ReviewInterrupted) as raised:
                 llm._review_saved_draft(None, checkpoint)
         pending = raised.exception.checkpoint
         self.assertEqual(pending['draft']['title'], fixed.title)
-        self.assertEqual(pending['attempt'], 2)
+        self.assertEqual(pending['attempt'], 1)
         bad_review = json.dumps({'issues':[dict(category='answer', question=1, evidence='남은 문제', fix='재수정 필요')]})
         result, call = self.resume(pending, [bad_review])
         self.assertEqual(call.call_count, 1)
         self.assertEqual(result.worksheet.title, fixed.title)
         self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('1번: 남은 문제',))
+        opened = llm.open_saved_draft(checkpoint=pending, grade=3)
+        self.assertEqual(opened.worksheet.title, fixed.title)
+        self.assertTrue(llm.LAST_GENERATION_WARNINGS.get())
 
     def test_inquiry_resume_keeps_the_activity_materials_and_purpose(self):
         checkpoint = self.interrupted(activity=True)

@@ -99,10 +99,9 @@ class ContentReviewTests(unittest.TestCase):
         self.assertIn('자료·조건·질문·선택지·정답·해설', repair)
         self.assertIn('430mL', call.call_args_list[3].args[2])
 
-    def test_still_unrealistic_after_two_repairs_completes_with_warning(self):
-        (raw, _), call = self.run_plan([sample_plan(), {'issues': [issue()]}, sample_plan(), {'issues': [issue()]},
-                                        sample_plan(), {'issues': [issue()]}])
-        self.assertEqual(call.call_count, 6)
+    def test_still_unrealistic_after_repair_completes_with_warning(self):
+        (raw, _), call = self.run_plan([sample_plan(), {'issues': [issue()]}, sample_plan(), {'issues': [issue()]}])
+        self.assertEqual(call.call_count, 4)
         self.assertEqual(json.loads(raw)['title'], sample_plan()['title'])
         self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('가족 네 명의 한 끼에 달걀 250개를 준비한다.',))
 
@@ -115,13 +114,14 @@ class ContentReviewTests(unittest.TestCase):
         self.assertEqual(llm.LAST_GENERATION_NOTES.get(), ('문항 사이 연결이 약함', '2번: 비슷한 유형 반복'))
         self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ())
 
-    def test_new_issue_introduced_by_repair_can_be_fixed_once_more(self):
+    def test_new_issue_introduced_by_repair_completes_with_warning_without_second_repair(self):
         fixed = sample_plan()
-        fixed['title'] = '재검토 지적까지 수정한 자료'
+        fixed['title'] = '1차 수정본'
         (raw, _), call = self.run_plan([sample_plan(), {'issues': [issue()]},
-            sample_plan(), {'issues': [dict(issue(), category='leakage', question=1)]}, fixed, {'issues': []}])
+            fixed, {'issues': [dict(issue(), category='leakage', question=1)]}])
         self.assertEqual(json.loads(raw)['title'], fixed['title'])
-        self.assertEqual(call.call_count, 6)
+        self.assertEqual(call.call_count, 4)
+        self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('1번: 가족 네 명의 한 끼에 달걀 250개를 준비한다.',))
 
     def test_failed_review_is_not_treated_as_approval_with_any_model(self):
         with patch.object(llm, '_generate', side_effect=[json.dumps(sample_plan()),

@@ -46,11 +46,10 @@ class FourKindsTests(unittest.TestCase):
         problem = dict(category='answer', question=1, evidence='잘못된 답', fix='다시 풀기')
         delta = {'header': {}, 'block_edits': []}
         outputs = [ws.model_dump_json(), json.dumps({'issues': [problem]}),
-                   json.dumps(delta), json.dumps({'issues': [problem]}),
                    json.dumps(delta), json.dumps({'issues': [problem]})]
         with patch.object(llm, '_generate', side_effect=outputs) as call:
             raw, _ = llm._generate_for_request(None, llm.MODELS[0], '지시', request='', context='1학년', n_questions=1, kind='test')
-        self.assertEqual(call.call_count, 6)
+        self.assertEqual(call.call_count, 4)
         self.assertEqual(json.loads(raw)['title'], '확인')
         self.assertEqual(llm.LAST_GENERATION_WARNINGS.get(), ('1번: 잘못된 답',))
         with patch.object(llm, '_generate', side_effect=[ws.model_dump_json(), '{}', '{}']), self.assertRaises(llm.AnalyzeError):

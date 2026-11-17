@@ -1,4 +1,4 @@
-"""초안만 medium, 필수 검토·수정과 그 밖 요청은 high로 보낸다."""
+"""새 학습지 생성(초안·검토·수정)은 medium, 그 밖 요청은 high로 보낸다."""
 import json
 import unittest
 from unittest.mock import patch
@@ -32,7 +32,7 @@ class DraftThinkingTests(unittest.TestCase):
                     n_questions=1, kind='inquiry', task_type='story', subjects=['수학','과학'])
         finally:
             client.close()
-        self.assertEqual(levels, ['medium','medium','high','high','high'])
+        self.assertEqual(levels, ['medium', 'medium', 'medium', 'medium', 'medium'])
         settings = [e['thinking'] for e in report['events'] if e['event']=='request_settings']
         self.assertEqual(settings, levels)
         self.assertIsNone(llm._thinking_level.get())
