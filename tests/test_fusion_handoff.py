@@ -21,6 +21,15 @@ class FusionTests(unittest.TestCase):
         for c in call.call_args_list:
             self.assertIn('이야기 속 문제 풀이', c.args[2])
             self.assertIn('사건', c.args[2])
+            self.assertIn('후보', c.args[2])
+
+    def test_fusion_rules_enforce_shared_data_and_forbid_trivial_blanks(self):
+        for task in ('project', 'story', 'inquiry'):
+            rule_text = fusion.rule(task, ['국어', '수학'], 'inquiry')
+            self.assertIn('단순 베끼기 문항을 내지 않는다', rule_text)
+            self.assertIn('느낀 점', rule_text)
+        sep_text = fusion.rule('separate', ['국어', '수학'], 'standard')
+        self.assertNotIn('단순 베끼기 문항을 내지 않는다', sep_text)
 
     def test_integrated_forms_take_priority_and_keep_separate_kind(self):
         for task in fusion.TASK_TYPES:
